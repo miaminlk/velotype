@@ -1,30 +1,36 @@
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
+use gpui::*;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT,
-    TRUE, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DEFAULT_GUI_FONT, DT_LEFT, DT_NOPREFIX, DT_TOP, DT_WORDBREAK,
-    DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject, HGDIOBJ, InvalidateRect,
-    PAINTSTRUCT, SetBkMode, SetTextColor, TRANSPARENT,
-};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
     DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent,
-    GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PostQuitMessage, RegisterClassExW,
-    SetWindowLongPtrW, TranslateMessage, UnregisterClassW, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
-    WM_GETTEXT, WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETTEXT, WM_SIZE,
-    WM_USER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassExW, SetWindowLongPtrW, TranslateMessage, UnregisterClassW, WM_CREATE, WM_DESTROY,
+    WM_ERASEBKGND, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETTEXT,
+    WM_SIZE, WM_USER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 use windows_sys::core::BOOL;
 
-use crate::markdown_to_display_text;
+use crate::app_menu::init as init_app_menu;
+use crate::components::init_with_keybindings as init_editor;
+use crate::editor::Editor;
+use crate::i18n::I18nManager;
+use crate::theme::ThemeManager;
 
 const CLASS_NAME: &[u16] = &[
     b'V' as u16,
@@ -37,31 +43,73 @@ const CLASS_NAME: &[u16] = &[
     b'e' as u16,
     0,
 ];
-const BACKGROUND: COLORREF = 0x00ff_fb_f7;
-const TEXT_COLOR: COLORREF = 0x0024_211f;
-
 pub const VTM_SETMARKDOWN: u32 = WM_USER + 1;
 pub const VTM_GETMARKDOWNLENGTH: u32 = WM_USER + 2;
 pub const VTM_GETMARKDOWN: u32 = WM_USER + 3;
+const VTM_CHILD_READY: u32 = WM_USER + 64;
 
 static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
+struct VelotypeControlAssets;
+
+impl AssetSource for VelotypeControlAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        match path {
+            "icon/workspace/folder.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/workspace/folder.svg"
+            )))),
+            "icon/workspace/markdown.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/workspace/markdown.svg"
+            )))),
+            "icon/titlebar/chrome-close.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-close.svg"
+            )))),
+            "icon/titlebar/chrome-minimize.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-minimize.svg"
+            )))),
+            "icon/titlebar/chrome-maximize.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-maximize.svg"
+            )))),
+            "icon/titlebar/chrome-restore.svg" => Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icon/titlebar/chrome-restore.svg"
+            )))),
+            _ => Ok(None),
+        }
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
+enum ControlCommand {
+    SetMarkdown(String),
+    Close,
+}
+
 struct ControlState {
     source: String,
-    display: Vec<u16>,
+    source_wide: Vec<u16>,
+    command_sender: Option<mpsc::Sender<ControlCommand>>,
+    child_hwnd: isize,
 }
 
 impl ControlState {
     fn new() -> Self {
         Self {
             source: String::new(),
-            display: wide_null(""),
+            source_wide: wide_null(""),
+            command_sender: None,
+            child_hwnd: 0,
         }
     }
 
     fn set_markdown(&mut self, markdown: String) {
-        self.display = wide_null(&markdown_to_display_text(&markdown));
-        self.source = markdown;
+        self.source_wide = wide_null(&markdown);
+        self.source = markdown.clone();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetMarkdown(markdown));
+        }
     }
 }
 
@@ -128,6 +176,42 @@ pub unsafe extern "system" fn Velotype_DirectFunction(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_CreateAsChildControl(
+    parent: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    markdown: *const u16,
+) -> HWND {
+    let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
+    let instance = if instance.is_null() {
+        unsafe { module_instance() }
+    } else {
+        instance
+    };
+    if parent.is_null() || !unsafe { register_class(instance) } {
+        return null_mut();
+    }
+    unsafe {
+        CreateWindowExW(
+            0,
+            CLASS_NAME.as_ptr(),
+            markdown,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            x,
+            y,
+            width.max(1),
+            height.max(1),
+            parent,
+            null_mut(),
+            instance,
+            null_mut(),
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_CreateStandaloneWindow() -> HWND {
     let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
     let instance = if instance.is_null() {
@@ -185,13 +269,28 @@ unsafe extern "system" fn control_wnd_proc(
         }
         WM_CREATE => {
             let create = l_param as *const CREATESTRUCTW;
+            let mut initial_markdown = String::new();
             if !create.is_null() {
                 let text = unsafe { wide_ptr_to_string((*create).lpszName) };
                 if !text.is_empty() {
-                    unsafe {
-                        with_state(hwnd, |state| state.set_markdown(text));
-                    }
+                    initial_markdown = text;
                 }
+            }
+            unsafe {
+                with_state(hwnd, |state| {
+                    state.source = initial_markdown.clone();
+                    state.source_wide = wide_null(&initial_markdown);
+                    state.command_sender = start_gpui_child(hwnd, initial_markdown);
+                });
+            }
+            0
+        }
+        VTM_CHILD_READY => {
+            unsafe {
+                with_state(hwnd, |state| {
+                    state.child_hwnd = w_param as isize;
+                    resize_child(hwnd, state.child_hwnd);
+                });
             }
             0
         }
@@ -199,16 +298,17 @@ unsafe extern "system" fn control_wnd_proc(
             let text = unsafe { wide_ptr_to_string(l_param as *const u16) };
             unsafe {
                 with_state(hwnd, |state| state.set_markdown(text));
-                InvalidateRect(hwnd, null(), TRUE);
             }
             TRUE as LRESULT
         }
-        WM_GETTEXTLENGTH => unsafe { with_state(hwnd, |state| utf16_len(&state.display)) },
+        WM_GETTEXTLENGTH => unsafe { with_state(hwnd, |state| utf16_len(&state.source_wide)) },
         VTM_GETMARKDOWNLENGTH => unsafe {
             with_state(hwnd, |state| state.source.encode_utf16().count() as isize)
         },
         WM_GETTEXT => unsafe {
-            with_state(hwnd, |state| copy_utf16(&state.display, w_param, l_param))
+            with_state(hwnd, |state| {
+                copy_utf16(&state.source_wide, w_param, l_param)
+            })
         },
         VTM_GETMARKDOWN => unsafe {
             let source = wide_null(&with_state(hwnd, |state| state.source.clone()));
@@ -217,13 +317,13 @@ unsafe extern "system" fn control_wnd_proc(
         WM_ERASEBKGND => TRUE as LRESULT,
         WM_SIZE => {
             unsafe {
-                InvalidateRect(hwnd, null(), TRUE);
+                with_state(hwnd, |state| resize_child(hwnd, state.child_hwnd));
             }
             0
         }
         WM_PAINT => {
             unsafe {
-                paint_control(hwnd);
+                validate_paint(hwnd);
             }
             0
         }
@@ -240,6 +340,9 @@ unsafe extern "system" fn control_wnd_proc(
             if !ptr.is_null() {
                 unsafe {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    if let Some(sender) = &(*ptr).command_sender {
+                        let _ = sender.send(ControlCommand::Close);
+                    }
                     drop(Box::from_raw(ptr));
                 }
             }
@@ -271,41 +374,119 @@ unsafe fn register_class(instance: HINSTANCE) -> bool {
     unsafe { GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
 }
 
-unsafe fn paint_control(hwnd: HWND) {
-    let mut ps = PAINTSTRUCT::default();
-    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<ControlCommand>> {
+    let host_hwnd = hwnd as isize;
+    let (width, height) = unsafe { client_size(hwnd) };
+    let (command_sender, command_receiver) = mpsc::channel::<ControlCommand>();
+    let builder = std::thread::Builder::new().name("VelotypeGpuiControl".to_string());
+    let result = builder.spawn(move || {
+        Application::new()
+            .with_assets(VelotypeControlAssets)
+            .run(move |cx: &mut App| {
+                I18nManager::init_with_language_id(cx, "en-US");
+                ThemeManager::init_with_theme_id(cx, "velotype-light");
+                crate::net::install_http_client(cx);
+                init_editor(cx, &BTreeMap::new());
+                init_app_menu(cx);
+
+                let bounds = Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(width.max(1) as f32), px(height.max(1) as f32)),
+                );
+                let options = WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: None,
+                    focus: false,
+                    is_movable: false,
+                    is_resizable: false,
+                    is_minimizable: false,
+                    window_background: WindowBackgroundAppearance::Opaque,
+                    parent_handle: Some(host_hwnd),
+                    ..WindowOptions::default()
+                };
+                let handle = cx
+                    .open_window(options, move |window, cx| {
+                        let child_hwnd = raw_hwnd(window);
+                        if child_hwnd != 0 {
+                            unsafe {
+                                PostMessageW(
+                                    host_hwnd as HWND,
+                                    VTM_CHILD_READY,
+                                    child_hwnd as WPARAM,
+                                    0,
+                                );
+                            }
+                        }
+                        cx.new(move |cx| Editor::from_markdown(cx, markdown, None))
+                    })
+                    .unwrap();
+
+                cx.spawn(async move |cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(30))
+                            .await;
+                        while let Ok(command) = command_receiver.try_recv() {
+                            match command {
+                                ControlCommand::SetMarkdown(markdown) => {
+                                    let _ = handle.update(cx, |editor, _window, cx| {
+                                        editor.replace_markdown(markdown, cx);
+                                    });
+                                    let _ = cx.refresh();
+                                }
+                                ControlCommand::Close => {
+                                    let _ = cx.update(|app| app.quit());
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                })
+                .detach();
+            });
+    });
+
+    if result.is_err() {
+        return None;
+    }
+
+    Some(command_sender)
+}
+
+fn raw_hwnd(window: &Window) -> isize {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return 0;
+    };
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => handle.hwnd.get(),
+        _ => 0,
+    }
+}
+
+unsafe fn client_size(hwnd: HWND) -> (i32, i32) {
     let mut rect = RECT::default();
     unsafe {
         GetClientRect(hwnd, &mut rect);
     }
-    let brush = unsafe { CreateSolidBrush(BACKGROUND) };
-    if !brush.is_null() {
-        unsafe {
-            FillRect(hdc, &rect, brush);
-            DeleteObject(brush as HGDIOBJ);
-        }
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+unsafe fn resize_child(hwnd: HWND, child_hwnd: isize) {
+    if child_hwnd == 0 {
+        return;
     }
+    let (width, height) = unsafe { client_size(hwnd) };
     unsafe {
-        SetBkMode(hdc, TRANSPARENT as i32);
-        SetTextColor(hdc, TEXT_COLOR);
-        let font = GetStockObject(DEFAULT_GUI_FONT);
-        if !font.is_null() {
-            windows_sys::Win32::Graphics::Gdi::SelectObject(hdc, font);
-        }
-        rect.left += 12;
-        rect.top += 12;
-        rect.right -= 12;
-        rect.bottom -= 12;
-        with_state(hwnd, |state| {
-            DrawTextW(
-                hdc,
-                state.display.as_ptr(),
-                utf16_len(&state.display) as i32,
-                &mut rect,
-                DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX,
-            );
-        });
+        MoveWindow(child_hwnd as HWND, 0, 0, width.max(1), height.max(1), TRUE);
+    }
+}
+
+unsafe fn validate_paint(hwnd: HWND) {
+    let mut ps = PAINTSTRUCT::default();
+    unsafe {
+        let hdc = BeginPaint(hwnd, &mut ps);
         EndPaint(hwnd, &ps);
+        let _ = hdc;
     }
 }
 

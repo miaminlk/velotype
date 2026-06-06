@@ -308,4 +308,27 @@ impl Editor {
         editor.refresh_stable_document_snapshot(cx);
         editor
     }
+
+    #[allow(dead_code)]
+    pub fn replace_markdown(&mut self, markdown: String, cx: &mut Context<Self>) {
+        let normalized = markdown.replace("\r\n", "\n").replace('\r', "\n");
+        let mut roots = Self::build_root_blocks_from_markdown(cx, &normalized);
+        if roots.is_empty() {
+            roots.push(Self::new_block(cx, BlockRecord::paragraph(String::new())));
+        }
+
+        self.document.replace_roots(roots, cx);
+        self.view_mode = ViewMode::Rendered;
+        self.table_cells.clear();
+        self.rebuild_table_runtimes(cx);
+        self.rebuild_image_runtimes(cx);
+        self.pending_focus = self.first_focusable_entity_id(cx);
+        self.active_entity_id = self.pending_focus;
+        self.pending_scroll_active_block_into_view = true;
+        self.pending_scroll_recheck_after_layout = true;
+        self.document_dirty = false;
+        self.last_stable_source_text = normalized;
+        self.refresh_stable_document_snapshot(cx);
+        cx.notify();
+    }
 }
