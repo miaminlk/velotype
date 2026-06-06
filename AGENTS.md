@@ -7,3 +7,12 @@
 
 
 作为步骤0，是安装编译环境。如果有无法安装的，可以要求我手动安装
+
+
+
+**Rules for writing new code (do not change existing code styles):**
+1. **Naming:** Use Snake Case.
+2. **Indent:** Use tabs (`\t`).
+3. **Braces `{`:**
+   - Definitions (func/class): Keep on the **same line**.
+   - Control flow (if/loop): Move to a **new line**.
