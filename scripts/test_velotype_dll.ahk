@@ -41,6 +41,16 @@ if !control_hwnd {
 	ExitApp 1
 }
 
+if !DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "bold_selection", "Str", "ctrl-alt-b", "Int") {
+	MsgBox "Velotype_SetEditorKeyBinding failed for bold_selection"
+	ExitApp 1
+}
+
+if DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "open_file", "Str", "ctrl-o", "Int") {
+	MsgBox "Velotype_SetEditorKeyBinding unexpectedly accepted file shortcut"
+	ExitApp 1
+}
+
 if !DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int") {
 	MsgBox "Velotype_InitializeControl failed"
 	ExitApp 1
@@ -53,6 +63,10 @@ if !DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, 
 
 DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
 DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
+if !DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "italic_selection", "Str", "ctrl-alt-i", "Int") {
+	MsgBox "Velotype_SetEditorKeyBinding failed after initialize"
+	ExitApp 1
+}
 
 display_len := DllCall(dll_path "\Velotype_MarkdownToDisplayText", "Str", "# Velotype`n`n- smoke", "Ptr", 0, "UPtr", 0, "UPtr")
 if display_len = 0 {

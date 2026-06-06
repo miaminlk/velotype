@@ -667,13 +667,28 @@ pub(crate) fn resolved_block_editor_keybindings(
     bindings
 }
 
+#[allow(dead_code)]
+pub(crate) fn is_block_editor_shortcut_id(id: &str) -> bool {
+    SHORTCUT_DEFINITIONS
+        .iter()
+        .any(|definition| definition.id == id && definition.context == BLOCK_CONTEXT)
+}
+
 pub(crate) fn install_keybindings(cx: &mut App, config: &BTreeMap<String, Vec<String>>) {
     cx.bind_keys(resolved_keybindings(config));
 }
 
 #[allow(dead_code)]
+pub(crate) fn install_block_editor_keybindings_with_config(
+    cx: &mut App,
+    config: &BTreeMap<String, Vec<String>>,
+) {
+    cx.bind_keys(resolved_block_editor_keybindings(config));
+}
+
+#[allow(dead_code)]
 pub(crate) fn install_block_editor_keybindings(cx: &mut App) {
-    cx.bind_keys(resolved_block_editor_keybindings(&BTreeMap::new()));
+    install_block_editor_keybindings_with_config(cx, &BTreeMap::new());
 }
 
 /// Register key bindings for the block editor.
@@ -689,7 +704,8 @@ pub(crate) fn init_with_keybindings(cx: &mut App, config: &BTreeMap<String, Vec<
 #[cfg(test)]
 mod tests {
     use super::{
-        ShortcutCommand, normalize_shortcut_config, resolved_shortcut_keys, shortcut_conflict_for,
+        ShortcutCommand, is_block_editor_shortcut_id, normalize_shortcut_config,
+        resolved_block_editor_keybindings, resolved_shortcut_keys, shortcut_conflict_for,
     };
     use std::collections::BTreeMap;
 
@@ -701,6 +717,19 @@ mod tests {
         assert_eq!(
             resolved_shortcut_keys(&config, ShortcutCommand::SaveDocument),
             vec!["ctrl-alt-s".to_string()]
+        );
+    }
+
+    #[test]
+    fn block_editor_keybindings_exclude_file_shortcuts() {
+        let mut config = BTreeMap::new();
+        config.insert("open_file".to_string(), vec!["ctrl-alt-o".to_string()]);
+
+        assert!(is_block_editor_shortcut_id("bold_selection"));
+        assert!(!is_block_editor_shortcut_id("open_file"));
+        assert_eq!(
+            resolved_block_editor_keybindings(&config).len(),
+            resolved_block_editor_keybindings(&BTreeMap::new()).len()
         );
     }
 
