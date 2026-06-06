@@ -17,27 +17,25 @@ main_gui := Gui("+Resize", "Velotype.dll smoke test")
 main_gui.MarginX := 0
 main_gui.MarginY := 0
 
-markdown := "# Velotype.dll`r`n`r`n- Loaded by AutoHotkey v2`r`n- Created as a Win32 child control`r`n- Markdown text is rendered by the DLL"
-style := 0x40000000 | 0x10000000 | 0x00800000 | 0x00010000
+readme_path := A_ScriptDir "\..\README.md"
+if !FileExist(readme_path) {
+	MsgBox "Missing README.md: " readme_path
+	ExitApp 1
+}
+markdown := FileRead(readme_path, "UTF-8")
 global control_hwnd := DllCall(
-	"CreateWindowExW",
-	"UInt", 0,
-	"Str", "Velotype",
-	"Str", markdown,
-	"UInt", style,
+	dll_path "\Velotype_CreateAsChildControl",
+	"Ptr", main_gui.Hwnd,
 	"Int", 12,
 	"Int", 12,
 	"Int", 760,
 	"Int", 520,
-	"Ptr", main_gui.Hwnd,
-	"Ptr", 0,
-	"Ptr", module,
-	"Ptr", 0,
+	"Str", markdown,
 	"Ptr"
 )
 
 if !control_hwnd {
-	MsgBox "CreateWindowExW failed for class Velotype"
+	MsgBox "Velotype_CreateAsChildControl failed"
 	ExitApp 1
 }
 
