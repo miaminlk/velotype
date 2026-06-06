@@ -51,6 +51,26 @@ if DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str",
 	ExitApp 1
 }
 
+if !DllCall(dll_path "\Velotype_SetControlBackgroundColor", "Ptr", control_hwnd, "UInt", 0x00F0F0F0, "Int") {
+	MsgBox "Velotype_SetControlBackgroundColor failed"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "editor_background", "Str", "FFFFFF", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for editor_background"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "font_size", "Str", "17", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for font_size"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "line_height", "Str", "1.6", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for line_height"
+	ExitApp 1
+}
+
 if !DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int") {
 	MsgBox "Velotype_InitializeControl failed"
 	ExitApp 1
@@ -63,6 +83,7 @@ if !DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, 
 
 DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
 DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
+DllCall(dll_path "\Velotype_HideCaret", "Ptr", control_hwnd, "Int")
 if !DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "italic_selection", "Str", "ctrl-alt-i", "Int") {
 	MsgBox "Velotype_SetEditorKeyBinding failed after initialize"
 	ExitApp 1
@@ -116,6 +137,10 @@ test_keyboard_input() {
 	global main_gui, control_hwnd, dll_path
 	main_gui.GetPos(&x, &y, &w, &h)
 	WinActivate "ahk_id " main_gui.Hwnd
+	if !DllCall(dll_path "\Velotype_SetCaretPosition", "Ptr", control_hwnd, "UInt", 0, "UInt", 0, "Int") {
+		MsgBox "Velotype_SetCaretPosition failed"
+		ExitApp 1
+	}
 	Click x + 80, y + 80
 	Sleep 250
 	SendText "__DLL_INPUT_SMOKE__"

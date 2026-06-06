@@ -284,6 +284,63 @@ BOOL WINAPI Velotype_SetLanguage(HWND hwnd, const wchar_t *language_id);
 
 设置控件语言。默认 `en-US`。
 
+### `Velotype_SetControlBackgroundColor`
+
+```c
+BOOL WINAPI Velotype_SetControlBackgroundColor(HWND hwnd, uint32_t color_bgr);
+```
+
+设置外层 Win32 child control 的初始化背景色，用于覆盖 GPUI child window 创建前的空白区域。默认值为 `0x00F0F0F0`。参数使用 Win32 `COLORREF` 排列（`0x00BBGGRR`）；灰度色如 `0x00F0F0F0` 与 RGB 写法一致。
+
+推荐在 `Velotype_ShowControl` 前调用。
+
+### `Velotype_SetThemeParameter`
+
+```c
+BOOL WINAPI Velotype_SetThemeParameter(
+    HWND hwnd,
+    const wchar_t *param_name,
+    const wchar_t *param_value
+);
+```
+
+设置当前控件的主题/排版参数。此 API 可在 `Velotype_InitializeControl` 前调用；初始化时会应用已保存参数，初始化后调用会刷新 GPUI 窗口。
+
+当前支持的参数：
+
+| 参数 | 值示例 | 说明 |
+| --- | --- | --- |
+| `editor_background` | `FFFFFF` / `FFFFFFFF` | 页面背景色，`RRGGBB` 或 `RRGGBBAA` |
+| `font_family`, `text_font_family` | `.SystemUIFont` / `Segoe UI` | 正文字体族 |
+| `font_size`, `text_size` | `17` | 正文字号 |
+| `text_line_height`, `line_height`, `line_spacing` | `1.6` | 正文行高倍率 |
+| `h1_size`, `h2_size`, `h3_size` | `32` | 标题字号 |
+| `code_size` | `15` | 代码字号 |
+| `block_gap`, `paragraph_spacing` | `4` | 块/段落间距 |
+| `editor_padding` | `24` | 页面内边距 |
+| `block_padding_x`, `block_padding_y` | `6` | 块内边距 |
+| `cursor_width` | `2` | 光标宽度 |
+
+DLL 默认主题为 `velotype-light`，其页面背景默认是 `0xFFFFFF`。
+
+### `Velotype_SetCaretPosition`
+
+```c
+BOOL WINAPI Velotype_SetCaretPosition(HWND hwnd, uint32_t line, uint32_t column);
+```
+
+显示输入光标并将其放到指定可见 block 行。`line` 从 `0` 开始，对应当前文档的可见 block 顺序；`column` 从 `0` 开始，并会被截断到该 block 的可见文本长度。
+
+DLL 控件加载 Markdown 后默认不显示 caret；只有调用此 API 后才主动聚焦并显示 caret。
+
+### `Velotype_HideCaret`
+
+```c
+BOOL WINAPI Velotype_HideCaret(HWND hwnd);
+```
+
+清除内部 GPUI 焦点并隐藏 caret。
+
 ### `Velotype_SetEditorKeyBinding`
 
 ```c
@@ -407,11 +464,17 @@ control_hwnd := DllCall(
     "Ptr"
 )
 
+DllCall(dll_path "\Velotype_SetControlBackgroundColor", "Ptr", control_hwnd, "UInt", 0x00F0F0F0, "Int")
+DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "editor_background", "Str", "FFFFFF", "Int")
+DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "font_size", "Str", "17", "Int")
+DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "line_height", "Str", "1.6", "Int")
 DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int")
 DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, "Int")
 DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
 DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
 DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "bold_selection", "Str", "ctrl-alt-b", "Int")
+; 默认不显示 caret；需要时显式显示：
+DllCall(dll_path "\Velotype_SetCaretPosition", "Ptr", control_hwnd, "UInt", 0, "UInt", 0, "Int")
 ```
 
 宿主窗口收到 `WM_SIZE` 时应同步调整控件：

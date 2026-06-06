@@ -95,7 +95,8 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
 2. 初始化：
    - `I18nManager::init_with_language_id`
    - `ThemeManager::init_with_theme_id`
-   - `crate::net::install_http_client`
+   - 应用 `ControlOptions::theme_params`
+   - 安装 BlockEditor 编辑热键
    - `init_editor`
 3. `WindowOptions.parent_handle = Some(host_hwnd)`。
 4. `cx.open_window(...)` 创建 GPUI child window。
@@ -126,6 +127,14 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
 
 这样宿主可以先创建控件，再配置/传入内容，最后显示。
 
+## 初始化背景、页面背景和 caret
+
+外层 Win32 控件类的 `hbrBackground` 使用 `CreateSolidBrush(0x00F0F0F0)`，并且在 GPUI child HWND 创建完成前的 `WM_PAINT` 中用同一颜色填充客户区，避免初始化阶段出现黑色矩形。宿主可通过 `Velotype_SetControlBackgroundColor(hwnd, color_bgr)` 覆盖外层背景色。
+
+DLL 默认主题仍为 `velotype-light`，但 Light theme 的 `editor_background` 调整为 `0xFFFFFF`，使 Markdown 页面默认是白色。宿主可通过 `Velotype_SetThemeParameter` 覆盖页面背景、字体、字号、行高、段落间距、padding、cursor 宽度等参数；该配置可在初始化前保存，初始化后动态应用。
+
+嵌入式 Editor 默认创建为无 active focus：加载 Markdown 后不显示 caret。宿主需要显示输入光标时调用 `Velotype_SetCaretPosition(hwnd, line, column)`；需要再次隐藏时调用 `Velotype_HideCaret(hwnd)`。
+
 ## Markdown 渲染相关 DLL API
 
 菜单中和显示/渲染相关、但对宿主仍有价值的能力迁移为显式 DLL API：
@@ -138,6 +147,12 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
   - 切换内部 GPUI Editor 主题，默认 `velotype-light`。
 - `Velotype_SetLanguage`
   - 切换内部 GPUI Editor 语言，默认 `en-US`。
+- `Velotype_SetControlBackgroundColor`
+  - 设置外层 Win32 child control 在 GPUI 子窗口就绪前的背景色。
+- `Velotype_SetThemeParameter`
+  - 设置页面背景、字体、字号、行高、块间距等主题/排版参数。
+- `Velotype_SetCaretPosition` / `Velotype_HideCaret`
+  - 显式控制 caret 显示位置；默认不显示 caret。
 - `Velotype_MarkdownToDisplayText`
   - 把 Markdown 转为纯文本显示内容。
 - `Velotype_RenderMarkdownToHtml`
@@ -150,7 +165,7 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
 DLL 控件不再调用 `app_menu::init()`，并且使用：
 
 ```rust
-Editor::from_markdown_embedded(cx, markdown, None)
+Editor::from_markdown_embedded(cx, markdown, None, hide_caret)
 ```
 
 `from_markdown_embedded()` 会把 `chrome_visible` 设为 `false`。渲染时：

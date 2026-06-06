@@ -12,7 +12,9 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, PAINTSTRUCT,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::SystemServices::{DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -118,6 +120,9 @@ enum ControlCommand {
     SetLanguage(String),
     SetEditorKeyBindings(BTreeMap<String, Vec<String>>),
     GetMarkdown(mpsc::Sender<String>),
+    SetThemeParameter(String, String),
+    SetCaretPosition(u32, u32),
+    HideCaret,
     Close,
 }
 
@@ -128,6 +133,8 @@ struct ControlOptions {
     theme_id: String,
     language_id: String,
     editor_keybindings: BTreeMap<String, Vec<String>>,
+    theme_params: BTreeMap<String, String>,
+    hide_caret: bool,
 }
 
 impl Default for ControlOptions {
@@ -138,6 +145,8 @@ impl Default for ControlOptions {
             theme_id: "velotype-light".to_string(),
             language_id: "en-US".to_string(),
             editor_keybindings: BTreeMap::new(),
+            theme_params: BTreeMap::new(),
+            hide_caret: true,
         }
     }
 }
@@ -155,6 +164,7 @@ struct ControlState {
     child_hwnd: isize,
     options: ControlOptions,
     initialize_on_create: bool,
+    background_color: u32,
 }
 
 impl ControlState {
@@ -167,6 +177,7 @@ impl ControlState {
             child_hwnd: 0,
             options,
             initialize_on_create,
+            background_color: 0x00F0F0F0,
         }
     }
 
@@ -194,6 +205,12 @@ impl ControlState {
         self.options.theme_id = theme_id.clone();
         if let Some(sender) = &self.command_sender {
             let _ = sender.send(ControlCommand::SetTheme(theme_id));
+            for (name, value) in &self.options.theme_params {
+                let _ = sender.send(ControlCommand::SetThemeParameter(
+                    name.clone(),
+                    value.clone(),
+                ));
+            }
         }
     }
 
@@ -340,6 +357,8 @@ pub unsafe extern "system" fn Velotype_CreateControlEx(
             theme_id: unsafe { wide_ptr_to_string_or_default(params.theme_id, "velotype-light") },
             language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
             editor_keybindings: BTreeMap::new(),
+            theme_params: BTreeMap::new(),
+            hide_caret: true,
         },
         initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
     });
@@ -508,6 +527,84 @@ pub unsafe extern "system" fn Velotype_ResetEditorKeyBindings(hwnd: HWND) -> BOO
             TRUE
         })
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetControlBackgroundColor(
+    hwnd: HWND,
+    color_bgr: u32,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            state.background_color = color_bgr;
+        });
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetThemeParameter(
+    hwnd: HWND,
+    param_name: *const u16,
+    param_value: *const u16,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let name = unsafe { wide_ptr_to_string(param_name) };
+    let value = unsafe { wide_ptr_to_string(param_value) };
+    if name.is_empty() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            state
+                .options
+                .theme_params
+                .insert(name.clone(), value.clone());
+            if let Some(sender) = &state.command_sender {
+                let _ = sender.send(ControlCommand::SetThemeParameter(name, value));
+            }
+        });
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetCaretPosition(
+    hwnd: HWND,
+    line: u32,
+    column: u32,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            if let Some(sender) = &state.command_sender {
+                let _ = sender.send(ControlCommand::SetCaretPosition(line, column));
+            }
+        });
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_HideCaret(hwnd: HWND) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            if let Some(sender) = &state.command_sender {
+                let _ = sender.send(ControlCommand::HideCaret);
+            }
+        });
+    }
+    TRUE
 }
 
 #[unsafe(no_mangle)]
@@ -737,7 +834,7 @@ unsafe fn register_class(instance: HINSTANCE) -> bool {
         hInstance: instance,
         hIcon: null_mut(),
         hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
-        hbrBackground: null_mut(),
+        hbrBackground: unsafe { CreateSolidBrush(0x00F0F0F0) } as *mut c_void,
         lpszMenuName: null(),
         lpszClassName: CLASS_NAME.as_ptr(),
         hIconSm: null_mut(),
@@ -755,6 +852,7 @@ fn start_gpui_child(
     options: ControlOptions,
 ) -> Option<mpsc::Sender<ControlCommand>> {
     let host_hwnd = hwnd as isize;
+    let hide_caret = options.hide_caret;
     let (width, height) = unsafe { client_size(hwnd) };
     let (command_sender, command_receiver) = mpsc::channel::<ControlCommand>();
     let builder = std::thread::Builder::new().name("VelotypeGpuiControl".to_string());
@@ -764,6 +862,12 @@ fn start_gpui_child(
             .run(move |cx: &mut App| {
                 I18nManager::init_with_language_id(cx, &options.language_id);
                 ThemeManager::init_with_theme_id(cx, &options.theme_id);
+                let theme_params = options.theme_params.clone();
+                cx.update_global::<ThemeManager, _>(|manager, _app| {
+                    for (name, value) in &theme_params {
+                        apply_theme_parameter(manager, name, value);
+                    }
+                });
                 install_block_editor_keybindings_with_config(cx, &options.editor_keybindings);
 
                 let bounds = Bounds::new(
@@ -794,7 +898,9 @@ fn start_gpui_child(
                                 );
                             }
                         }
-                        cx.new(move |cx| Editor::from_markdown_embedded(cx, markdown, None))
+                        cx.new(move |cx| {
+                            Editor::from_markdown_embedded(cx, markdown, None, hide_caret)
+                        })
                     })
                     .unwrap();
 
@@ -836,6 +942,26 @@ fn start_gpui_child(
                                         })
                                         .unwrap_or_default();
                                     let _ = reply_sender.send(markdown);
+                                }
+                                ControlCommand::SetThemeParameter(name, value) => {
+                                    let _ = cx.update(|app| {
+                                        app.update_global::<ThemeManager, _>(|manager, _app| {
+                                            apply_theme_parameter(manager, &name, &value);
+                                        });
+                                        app.refresh_windows();
+                                    });
+                                }
+                                ControlCommand::SetCaretPosition(line, column) => {
+                                    let _ = handle.update(cx, |editor, window, cx| {
+                                        editor.set_caret_position(line, column, window, cx);
+                                    });
+                                    let _ = cx.refresh();
+                                }
+                                ControlCommand::HideCaret => {
+                                    let _ = handle.update(cx, |editor, window, cx| {
+                                        editor.hide_caret(window, cx);
+                                    });
+                                    let _ = cx.refresh();
                                 }
                                 ControlCommand::Close => {
                                     let _ = cx.update(|app| app.quit());
@@ -888,8 +1014,11 @@ unsafe fn validate_paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     unsafe {
         let hdc = BeginPaint(hwnd, &mut ps);
+        let color = with_state(hwnd, |state| state.background_color);
+        let brush = CreateSolidBrush(color);
+        FillRect(hdc, &ps.rcPaint, brush);
+        DeleteObject(brush as *mut c_void);
         EndPaint(hwnd, &ps);
-        let _ = hdc;
     }
 }
 
@@ -966,6 +1095,90 @@ unsafe fn copy_utf16_required(value: &[u16], target: *mut u16, capacity: usize) 
         }
     }
     count
+}
+
+fn apply_theme_parameter(manager: &mut ThemeManager, name: &str, value: &str) {
+    let mut theme = manager.current().clone();
+    match name {
+        "editor_background" => {
+            if let Some(color) = parse_hex_color(value) {
+                theme.colors.editor_background = color;
+            }
+        }
+        "font_size" | "text_size" => {
+            if let Ok(size) = value.parse::<f32>() {
+                theme.typography.text_size = size;
+            }
+        }
+        "font_family" | "text_font_family" => {
+            if !value.is_empty() {
+                theme.typography.text_font_family = value.to_string();
+            }
+        }
+        "text_line_height" | "line_height" | "line_spacing" => {
+            if let Ok(height) = value.parse::<f32>() {
+                theme.typography.text_line_height = height;
+            }
+        }
+        "h1_size" => {
+            if let Ok(size) = value.parse::<f32>() {
+                theme.typography.h1_size = size;
+            }
+        }
+        "h2_size" => {
+            if let Ok(size) = value.parse::<f32>() {
+                theme.typography.h2_size = size;
+            }
+        }
+        "h3_size" => {
+            if let Ok(size) = value.parse::<f32>() {
+                theme.typography.h3_size = size;
+            }
+        }
+        "code_size" => {
+            if let Ok(size) = value.parse::<f32>() {
+                theme.typography.code_size = size;
+            }
+        }
+        "block_gap" | "paragraph_spacing" => {
+            if let Ok(gap) = value.parse::<f32>() {
+                theme.dimensions.block_gap = gap;
+            }
+        }
+        "editor_padding" => {
+            if let Ok(padding) = value.parse::<f32>() {
+                theme.dimensions.editor_padding = padding;
+            }
+        }
+        "block_padding_x" => {
+            if let Ok(padding) = value.parse::<f32>() {
+                theme.dimensions.block_padding_x = padding;
+            }
+        }
+        "block_padding_y" => {
+            if let Ok(padding) = value.parse::<f32>() {
+                theme.dimensions.block_padding_y = padding;
+            }
+        }
+        "cursor_width" => {
+            if let Ok(width) = value.parse::<f32>() {
+                theme.dimensions.cursor_width = width;
+            }
+        }
+        _ => return,
+    }
+    manager.set_theme(theme);
+}
+
+fn parse_hex_color(value: &str) -> Option<Hsla> {
+    let hex_str = value.trim_start_matches("0x").trim_start_matches('#');
+    let rgba_val = u32::from_str_radix(hex_str, 16).ok()?;
+    let rgba_val = if hex_str.len() <= 6 {
+        (rgba_val << 8) | 0xFF
+    } else {
+        rgba_val
+    };
+    Some(Hsla::from(rgba(rgba_val)))
 }
 
 fn theme_for_id(theme_id: &str) -> Theme {

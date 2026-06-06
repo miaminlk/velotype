@@ -20,7 +20,7 @@ pub(crate) fn open_about_github_url(cx: &mut App) {
     cx.open_url(ABOUT_GITHUB_URL);
 }
 
-fn editor_text_font() -> Font {
+fn editor_text_font(family: &str) -> Font {
     // FontFallbacks is internally `Arc<Vec<String>>` — building it once
     // per process and Arc-cloning per render is the right shape, since
     // editor_text_font() is called from Editor::render on every frame.
@@ -30,7 +30,7 @@ fn editor_text_font() -> Font {
             FontFallbacks::from_fonts(tibetan_font_fallbacks_for_target_os(std::env::consts::OS))
         })
         .clone();
-    let mut font = font(".SystemUIFont");
+    let mut font = font(family.to_string());
     font.fallbacks = Some(fallbacks);
     font
 }
@@ -1770,7 +1770,7 @@ impl Render for Editor {
             .h_full()
             .relative()
             .bg(theme.colors.editor_background)
-            .font(editor_text_font())
+            .font(editor_text_font(&theme.typography.text_font_family))
             .capture_action(cx.listener(Self::on_copy_capture))
             .capture_action(cx.listener(Self::on_cut_capture))
             .capture_action(cx.listener(Self::on_delete_capture))
@@ -1920,7 +1920,10 @@ mod tests {
 
     #[test]
     fn editor_text_font_keeps_system_ui_as_primary_family() {
-        assert_eq!(editor_text_font().family.to_string(), ".SystemUIFont");
+        assert_eq!(
+            editor_text_font(".SystemUIFont").family.to_string(),
+            ".SystemUIFont"
+        );
     }
 
     #[test]
