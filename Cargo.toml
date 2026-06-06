@@ -4,6 +4,11 @@ version = "0.5.3"
 edition = "2024"
 license = "Apache-2.0"
 
+[lib]
+name = "velotype"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
 [lints.clippy]
 # Allow stylistic patterns the project doesn't enforce. These mirror the
 # spirit of gpui-component's workspace lints — categorically silence
@@ -96,6 +101,15 @@ tree-sitter-python = { version = "0.25", optional = true }
 tree-sitter-ruby = { version = "0.23", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 tree-sitter-toml = { package = "adot-tree-sitter-toml", version = "0.1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 gpui = { version = "0.2", features = ["test-support"] }
