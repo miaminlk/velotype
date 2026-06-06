@@ -30,11 +30,18 @@
 `velotype.dll` 是嵌入式 Markdown 显示控件，当前 library crate 在非测试构建中使用 no-op app-menu shim：
 
 - 不安装 native/in-window menu。
-- 不注册 exe 的默认文件操作快捷键。
+- 只注册 `BlockEditor` 上下文的编辑快捷键，例如 Enter、Backspace、方向键、选择、复制/粘贴、Undo、格式化和缩进。
+- 不注册 exe 的默认文件操作快捷键，例如 `Ctrl+S`、`Ctrl+O`、`Ctrl+N`、`Ctrl+Q`。
 - `OpenFile` / `SaveDocument` / `SaveDocumentAs` / 最近文件 / CLI 安装等菜单入口不作为 DLL 控件能力暴露。
 - 宿主需要的操作通过 DLL API 完成，例如 `Velotype_SetMarkdown`、`Velotype_SetTheme`、`Velotype_SetLanguage`。
 
 这避免 DLL 控件把宿主不需要的应用级菜单/文件操作行为带入嵌入场景，同时不影响 `velotype.exe`，因为 exe crate 仍然从 `src/main.rs` 加载真实模块。
+
+## 子控件键盘焦点
+
+GPUI 原 Windows 后端主要面向顶级窗口；鼠标点击由 GPUI 处理后不一定会继续走 Windows 默认焦点处理。嵌入为 `WS_CHILD` 后，这会导致控件内部可显示 caret，但 Windows 键盘焦点仍停留在宿主窗口，表现为不能输入。
+
+本分支在 GPUI Windows backend 的 mouse-down 处理里对当前 GPUI child HWND 调用 `SetFocus`，保证后续 `WM_KEYDOWN` / `WM_CHAR` 进入 GPUI 子控件。DLL 初始化同时安装 BlockEditor 编辑快捷键，保留输入、删除、导航、选择、复制/粘贴等编辑行为，但不恢复菜单/文件操作快捷键。
 
 ## GPUI 修改点
 
@@ -178,6 +185,7 @@ editor.replace_markdown(markdown, cx)
 - 调用 `Velotype_ShowControl`
 - 调用 `Velotype_SetTheme` / `Velotype_SetLanguage`
 - 调用 `Velotype_MarkdownToDisplayText` / `Velotype_RenderMarkdownToHtml` 验证渲染相关 API 可用
+- 可选 `--test-input` 会点击 GPUI 子控件、发送文本，并用 `Velotype_GetMarkdown` 验证实际文档已更新
 - 在 AHK `WM_SIZE` 中用 `MoveWindow` 调整控件大小
 
 ## Release DLL 体积调查

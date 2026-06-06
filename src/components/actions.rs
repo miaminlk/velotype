@@ -645,8 +645,35 @@ pub(crate) fn resolved_keybindings(config: &BTreeMap<String, Vec<String>>) -> Ve
     bindings
 }
 
+#[allow(dead_code)]
+pub(crate) fn resolved_block_editor_keybindings(
+    config: &BTreeMap<String, Vec<String>>,
+) -> Vec<KeyBinding> {
+    let normalized = normalize_shortcut_config(config);
+    let mut bindings = Vec::new();
+    for definition in SHORTCUT_DEFINITIONS
+        .iter()
+        .filter(|definition| definition.context == BLOCK_CONTEXT)
+    {
+        let keys = normalized
+            .get(definition.id)
+            .cloned()
+            .unwrap_or_else(|| default_keys(*definition));
+        bindings.extend(
+            keys.iter()
+                .map(|key| key_binding_for(definition.command, key, definition.context)),
+        );
+    }
+    bindings
+}
+
 pub(crate) fn install_keybindings(cx: &mut App, config: &BTreeMap<String, Vec<String>>) {
     cx.bind_keys(resolved_keybindings(config));
+}
+
+#[allow(dead_code)]
+pub(crate) fn install_block_editor_keybindings(cx: &mut App) {
+    cx.bind_keys(resolved_block_editor_keybindings(&BTreeMap::new()));
 }
 
 /// Register key bindings for the block editor.

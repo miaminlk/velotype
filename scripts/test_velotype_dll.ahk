@@ -70,8 +70,22 @@ OnMessage(0x0005, resize_control)
 main_gui.OnEvent("Close", (*) => ExitApp(0))
 main_gui.Show("w800 h560")
 
-if A_Args.Length && A_Args[1] = "--auto-close" {
-	SetTimer (() => ExitApp(0)), -2000
+auto_close := false
+test_input := false
+for arg in A_Args {
+	if arg = "--auto-close" {
+		auto_close := true
+	} else if arg = "--test-input" {
+		test_input := true
+	}
+}
+
+if test_input {
+	SetTimer test_keyboard_input, -1500
+}
+
+if auto_close {
+	SetTimer (() => ExitApp(0)), -3500
 }
 
 resize_control(w_param, l_param, msg, hwnd) {
@@ -82,4 +96,23 @@ resize_control(w_param, l_param, msg, hwnd) {
 	width := l_param & 0xffff
 	height := (l_param >> 16) & 0xffff
 	DllCall("MoveWindow", "Ptr", control_hwnd, "Int", 12, "Int", 12, "Int", width - 24, "Int", height - 24, "Int", true)
+}
+
+test_keyboard_input() {
+	global main_gui, control_hwnd, dll_path
+	main_gui.GetPos(&x, &y, &w, &h)
+	WinActivate "ahk_id " main_gui.Hwnd
+	Click x + 80, y + 80
+	Sleep 250
+	SendText "__DLL_INPUT_SMOKE__"
+	Sleep 500
+
+	required_len := DllCall(dll_path "\Velotype_GetMarkdownLength", "Ptr", control_hwnd, "UPtr")
+	buffer := Buffer((required_len + 1) * 2, 0)
+	DllCall(dll_path "\Velotype_GetMarkdown", "Ptr", control_hwnd, "Ptr", buffer, "UPtr", required_len + 1, "UPtr")
+	markdown_after_input := StrGet(buffer, "UTF-16")
+	if !InStr(markdown_after_input, "__DLL_INPUT_SMOKE__") {
+		MsgBox "Keyboard input did not update Markdown"
+		ExitApp 1
+	}
 }

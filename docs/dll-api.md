@@ -40,7 +40,7 @@ SendMessage(hwnd, VTM_SETMARKDOWN, 0, (LPARAM)L"markdown");
 LRESULT len = SendMessage(hwnd, VTM_GETMARKDOWNLENGTH, 0, 0);
 ```
 
-返回当前 Markdown 源文本的 UTF-16 code unit 数，不含结尾 `NUL`。
+返回当前 Markdown 源文本的 UTF-16 code unit 数，不含结尾 `NUL`。控件初始化后会同步查询 GPUI Editor 的当前文档，因此包含用户在 DLL 控件内直接输入后的内容。
 
 ### `VTM_GETMARKDOWN`
 
@@ -261,7 +261,7 @@ size_t WINAPI Velotype_GetMarkdownLength(HWND hwnd);
 size_t WINAPI Velotype_GetMarkdown(HWND hwnd, wchar_t *buffer, size_t capacity);
 ```
 
-复制当前 Markdown 源文本到 `buffer`。返回完整内容所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。
+复制当前 Markdown 源文本到 `buffer`。返回完整内容所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。控件初始化后会同步查询 GPUI Editor 的当前文档，因此包含用户在 DLL 控件内直接输入后的内容。
 
 ### `Velotype_SetTheme`
 

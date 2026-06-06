@@ -25,6 +25,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
+use crate::components::install_block_editor_keybindings;
 use crate::editor::Editor;
 use crate::export;
 use crate::i18n::I18nManager;
@@ -111,6 +112,7 @@ enum ControlCommand {
     SetMarkdown(String),
     SetTheme(String),
     SetLanguage(String),
+    GetMarkdown(mpsc::Sender<String>),
     Close,
 }
 
@@ -193,6 +195,23 @@ impl ControlState {
         if let Some(sender) = &self.command_sender {
             let _ = sender.send(ControlCommand::SetLanguage(language_id));
         }
+    }
+
+    fn current_markdown(&mut self) -> String {
+        if let Some(sender) = &self.command_sender {
+            let (reply_sender, reply_receiver) = mpsc::channel();
+            if sender
+                .send(ControlCommand::GetMarkdown(reply_sender))
+                .is_ok()
+            {
+                if let Ok(markdown) = reply_receiver.recv_timeout(Duration::from_millis(500)) {
+                    self.source_wide = wide_null(&markdown);
+                    self.source = markdown.clone();
+                    return markdown;
+                }
+            }
+        }
+        self.source.clone()
     }
 }
 
@@ -382,7 +401,11 @@ pub unsafe extern "system" fn Velotype_GetMarkdownLength(hwnd: HWND) -> usize {
     if hwnd.is_null() {
         return 0;
     }
-    unsafe { with_state(hwnd, |state| state.source.encode_utf16().count()) }
+    unsafe {
+        with_state(hwnd, |state| {
+            state.current_markdown().encode_utf16().count()
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -396,6 +419,7 @@ pub unsafe extern "system" fn Velotype_GetMarkdown(
     }
     unsafe {
         with_state(hwnd, |state| {
+            state.current_markdown();
             copy_utf16_required(&state.source_wide, buffer, capacity)
         })
     }
@@ -679,6 +703,7 @@ fn start_gpui_child(
             .run(move |cx: &mut App| {
                 I18nManager::init_with_language_id(cx, &options.language_id);
                 ThemeManager::init_with_theme_id(cx, &options.theme_id);
+                install_block_editor_keybindings(cx);
 
                 let bounds = Bounds::new(
                     point(px(0.0), px(0.0)),
@@ -736,6 +761,14 @@ fn start_gpui_child(
                                         I18nManager::init_with_language_id(app, &language_id);
                                         app.refresh_windows();
                                     });
+                                }
+                                ControlCommand::GetMarkdown(reply_sender) => {
+                                    let markdown = handle
+                                        .update(cx, |editor, _window, cx| {
+                                            editor.serialized_document_text(cx)
+                                        })
+                                        .unwrap_or_default();
+                                    let _ = reply_sender.send(markdown);
                                 }
                                 ControlCommand::Close => {
                                     let _ = cx.update(|app| app.quit());
