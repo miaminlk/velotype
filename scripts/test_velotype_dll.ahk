@@ -16,6 +16,8 @@ if !module {
 main_gui := Gui("+Resize", "Velotype.dll smoke test")
 main_gui.MarginX := 0
 main_gui.MarginY := 0
+event_message := 0x0400 + 70
+event_log := ""
 
 readme_path := A_ScriptDir "\..\README.md"
 if !FileExist(readme_path) {
@@ -38,6 +40,12 @@ global control_hwnd := DllCall(
 
 if !control_hwnd {
 	MsgBox "Velotype_CreateControlEx failed"
+	ExitApp 1
+}
+
+OnMessage(event_message, velotype_event)
+if !DllCall(dll_path "\Velotype_RegisterEventCallback", "Ptr", control_hwnd, "Ptr", main_gui.Hwnd, "UInt", event_message, "Str", "save|change|", "Int") {
+	MsgBox "Velotype_RegisterEventCallback failed"
 	ExitApp 1
 }
 
@@ -68,6 +76,22 @@ if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", 
 
 if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "line_height", "Str", "1.6", "Int") {
 	MsgBox "Velotype_SetThemeParameter failed for line_height"
+	ExitApp 1
+}
+
+if !set_property("theme.parameter.cursor_width", "2") || get_property("theme.parameter.cursor_width") != "2" {
+	MsgBox "Velotype property API failed for theme.parameter.cursor_width"
+	ExitApp 1
+}
+
+if !set_property("editor.keybinding.save_document", "ctrl-s") {
+	MsgBox "Velotype property API failed for editor.keybinding.save_document"
+	ExitApp 1
+}
+
+registered_events := get_property("event.names")
+if !InStr(registered_events, "save|") || !InStr(registered_events, "change|") {
+	MsgBox "Velotype event registration property mismatch: " registered_events
 	ExitApp 1
 }
 
@@ -133,8 +157,20 @@ resize_control(w_param, l_param, msg, hwnd) {
 	DllCall("MoveWindow", "Ptr", control_hwnd, "Int", 12, "Int", 12, "Int", width - 24, "Int", height - 24, "Int", true)
 }
 
+velotype_event(w_param, l_param, msg, hwnd) {
+	global control_hwnd, event_log
+	if w_param != control_hwnd {
+		return
+	}
+	last_event := get_property("event.last")
+	if last_event = "" {
+		last_event := l_param = 1 ? "save|" : l_param = 2 ? "change|" : ""
+	}
+	event_log .= last_event
+}
+
 test_keyboard_input() {
-	global main_gui, control_hwnd, dll_path
+	global main_gui, control_hwnd, dll_path, event_log
 	main_gui.GetPos(&x, &y, &w, &h)
 	WinActivate "ahk_id " main_gui.Hwnd
 	if !DllCall(dll_path "\Velotype_SetCaretPosition", "Ptr", control_hwnd, "UInt", 0, "UInt", 0, "Int") {
@@ -146,6 +182,10 @@ test_keyboard_input() {
 	Sleep 500
 	SendText "__DLL_INPUT_SMOKE__"
 	Sleep 2000
+	if !InStr(event_log, "change|") {
+		MsgBox "Change event was not notified. Event log: " event_log
+		ExitApp 1
+	}
 
 	; Retry readback up to 3 times with increasing delays
 	md_len := 0
@@ -167,4 +207,23 @@ test_keyboard_input() {
 		MsgBox "Keyboard input did not update Markdown`nGot: " SubStr(markdown_after_input, 1, 200)
 		ExitApp 1
 	}
+	Send "^s"
+	Sleep 1000
+	if !InStr(event_log, "save|") {
+		MsgBox "Save hotkey did not notify host. Event log: " event_log
+		ExitApp 1
+	}
+}
+
+set_property(name, value) {
+	global dll_path, control_hwnd
+	return DllCall(dll_path "\Velotype_SetProperty", "Ptr", control_hwnd, "Str", name, "Str", value, "Int")
+}
+
+get_property(name) {
+	global dll_path, control_hwnd
+	required_len := DllCall(dll_path "\Velotype_GetProperty", "Ptr", control_hwnd, "Str", name, "Ptr", 0, "UPtr", 0, "UPtr")
+	prop_buf := Buffer((required_len + 1) * 2, 0)
+	DllCall(dll_path "\Velotype_GetProperty", "Ptr", control_hwnd, "Str", name, "Ptr", prop_buf, "UPtr", required_len + 1, "UPtr")
+	return StrGet(prop_buf, "UTF-16")
 }

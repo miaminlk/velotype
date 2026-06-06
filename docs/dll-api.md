@@ -24,6 +24,7 @@ Velotype
 #define VTM_SHOW               (WM_USER + 5)
 #define VTM_SETTHEME           (WM_USER + 6)
 #define VTM_SETLANGUAGE        (WM_USER + 7)
+#define VTM_NOTIFY_EVENT       (WM_USER + 65)
 ```
 
 ### `VTM_SETMARKDOWN`
@@ -341,6 +342,69 @@ BOOL WINAPI Velotype_HideCaret(HWND hwnd);
 
 清除内部 GPUI 焦点并隐藏 caret。
 
+### `Velotype_SetProperty` / `Velotype_GetProperty`
+
+```c
+BOOL WINAPI Velotype_SetProperty(HWND hwnd, const wchar_t *name, const wchar_t *value);
+size_t WINAPI Velotype_GetProperty(HWND hwnd, const wchar_t *name, wchar_t *buffer, size_t capacity);
+```
+
+提供类似 `libmpv.dll` 的统一字符串属性读写入口。`Velotype_GetProperty` 返回完整值所需 UTF-16 code unit 数，不含结尾 `NUL`；可先传 `buffer = NULL, capacity = 0` 查询长度。未知属性会作为宿主自定义字符串保存，便于后续由宿主逐步实现。
+
+当前内置属性覆盖控制层、文档层、主题/语言、编辑器、热键和事件模块：
+
+| 属性 | get | set | 说明 |
+| --- | --- | --- | --- |
+| `document.markdown`, `markdown` | yes | yes | 当前 Markdown 源文本 |
+| `document.length`, `markdown.length` | yes | no | 当前 Markdown UTF-16 长度 |
+| `document.display_text` | yes | no | Markdown 转纯显示文本 |
+| `document.html` | yes | no | Markdown 转 HTML |
+| `theme.id`, `control.theme` | yes | yes | 当前主题 ID，默认 `velotype-light` |
+| `language.id`, `control.language` | yes | yes | 当前语言 ID，默认 `en-US` |
+| `theme.parameter.<name>`, `theme.<name>` | yes | yes | 主题参数；`name` 同 `Velotype_SetThemeParameter` |
+| `control.background_color`, `background_color` | yes | yes | 外层 Win32 背景色，`BBGGRR`/`0xBBGGRR` |
+| `control.visible` | no | yes | `1/true/show` 显示，其它值隐藏 |
+| `control.child_hwnd` | yes | no | 内层 GPUI child HWND 数值 |
+| `control.initialized` | yes | no | `1` 表示 GPUI 已初始化 |
+| `editor.caret`, `caret.position` | no | yes | `line,column`，等价于 `Velotype_SetCaretPosition` |
+| `editor.hide_caret`, `caret.hidden` | yes | yes | `1/true` 隐藏 caret |
+| `editor.keybinding.<command_id>` | yes | yes | 编辑命令热键；值使用 `|` 分隔 |
+| `event.names` | yes | yes | 已注册事件，如 `save|change|` |
+| `event.last` | yes | no | 最近一次通知事件，如 `save|` |
+| `event.message` | yes | yes | 通知宿主的窗口消息 ID |
+| `event.notify_hwnd` | yes | yes | 接收事件通知的宿主 HWND 数值 |
+
+示例：
+
+```c
+Velotype_SetProperty(hwnd, L"theme.parameter.font_size", L"17");
+Velotype_SetProperty(hwnd, L"editor.caret", L"0,0");
+Velotype_SetProperty(hwnd, L"editor.keybinding.save_document", L"ctrl-s");
+```
+
+### `Velotype_RegisterEventCallback`
+
+```c
+BOOL WINAPI Velotype_RegisterEventCallback(
+    HWND hwnd,
+    HWND notify_hwnd,
+    uint32_t message_id,
+    const wchar_t *event_names
+);
+```
+
+注册宿主事件通知。`event_names` 使用 `|`、`;`、`,` 或换行分隔，例如 `L"save|change|"`。`message_id == 0` 时使用默认 `VTM_NOTIFY_EVENT`。
+
+当前事件：
+
+| 事件 | 触发时机 | `lParam` |
+| --- | --- | --- |
+| `change` | 文档内容发生编辑变更 | `2` |
+| `save` | 用户按已注册的保存热键（默认 `Ctrl+S`，或 `editor.keybinding.save_document` 覆盖） | `1` |
+| `save_as` | 用户按另存为热键（默认 `Ctrl+Shift+S`，或 `editor.keybinding.save_document_as` 覆盖） | `3` |
+
+触发时 DLL 调用 `PostMessageW(notify_hwnd, message_id, (WPARAM)hwnd, event_code)`，并把 `event.last` 更新为 `save|` / `change|`。`save` 事件只通知宿主，不在 DLL 内部执行文件保存或弹保存对话框。
+
 ### `Velotype_SetEditorKeyBinding`
 
 ```c
@@ -357,7 +421,7 @@ BOOL WINAPI Velotype_SetEditorKeyBinding(
 Velotype_SetEditorKeyBinding(hwnd, L"bold_selection", L"ctrl-alt-b;ctrl-b");
 ```
 
-此 API 只接受 `BlockEditor` 上下文的编辑命令；`open_file`、`save_document`、`new_window` 等文件/菜单命令会返回 `FALSE`，不会被注册到 DLL 控件。
+此 API 默认接受 `BlockEditor` 上下文的编辑命令；另外接受 `save_document` / `save_document_as` 作为宿主事件热键。`open_file`、`new_window` 等其它文件/菜单命令会返回 `FALSE`，不会被注册到 DLL 控件。
 
 可用编辑命令 ID：
 

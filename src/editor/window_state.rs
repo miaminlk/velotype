@@ -141,6 +141,9 @@ impl Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.embedded_event_bridge.emit("save") {
+            return;
+        }
         self.request_save_document(cx);
     }
 
@@ -241,6 +244,7 @@ impl Editor {
     /// Marks the document dirty and schedules window-title and edited-state
     /// refresh for the next render frame.
     pub(super) fn mark_dirty(&mut self, cx: &mut Context<Self>) {
+        self.embedded_event_bridge.emit("change");
         if !self.document_dirty {
             self.document_dirty = true;
             self.pending_window_edited = true;

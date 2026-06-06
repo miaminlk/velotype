@@ -5,9 +5,10 @@
 //! [`DocumentTree`], which centralizes structural mutations and cached visible
 //! order metadata.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use gpui::*;
@@ -44,6 +45,66 @@ mod window_state;
 mod workspace;
 
 use self::workspace::WorkspaceState;
+
+type EmbeddedEventSink = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
+#[derive(Clone, Default)]
+pub struct EmbeddedEventBridge {
+    inner: Arc<Mutex<EmbeddedEventState>>,
+}
+#[allow(dead_code)]
+#[derive(Default)]
+struct EmbeddedEventState {
+    events: BTreeSet<String>,
+    sink: Option<EmbeddedEventSink>,
+    last_event: String,
+}
+
+#[allow(dead_code)]
+impl EmbeddedEventBridge {
+    pub fn set_events(&self, events: BTreeSet<String>) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.events = events;
+        }
+    }
+
+    pub fn set_sink(&self, sink: Option<EmbeddedEventSink>) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.sink = sink;
+        }
+    }
+
+    pub fn events(&self) -> BTreeSet<String> {
+        self.inner
+            .lock()
+            .map(|state| state.events.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn last_event(&self) -> String {
+        self.inner
+            .lock()
+            .map(|state| state.last_event.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn emit(&self, event: &str) -> bool {
+        let sink = {
+            let Ok(mut state) = self.inner.lock() else {
+                return false;
+            };
+            if !state.events.contains(event) {
+                return false;
+            }
+            state.last_event = format!("{event}|");
+            state.sink.clone()
+        };
+        if let Some(sink) = sink {
+            sink(event);
+        }
+        true
+    }
+}
 
 /// Link navigation request deferred until a `Window` is available.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +183,7 @@ pub struct Editor {
     image_reference_definitions: Arc<ImageReferenceDefinitions>,
     link_reference_definitions: Arc<LinkReferenceDefinitions>,
     footnote_registry: Arc<FootnoteRegistry>,
+    embedded_event_bridge: EmbeddedEventBridge,
 }
 
 /// Runtime binding between a table block and one cell editor.
@@ -302,6 +364,7 @@ impl Editor {
             image_reference_definitions: Arc::default(),
             link_reference_definitions: Arc::default(),
             footnote_registry: Arc::default(),
+            embedded_event_bridge: EmbeddedEventBridge::default(),
         };
         editor.rebuild_table_runtimes(cx);
         editor.rebuild_image_runtimes(cx);
@@ -317,9 +380,11 @@ impl Editor {
         markdown: String,
         file_path: Option<PathBuf>,
         hide_caret: bool,
+        embedded_event_bridge: EmbeddedEventBridge,
     ) -> Self {
         let mut editor = Self::from_markdown(cx, markdown, file_path);
         editor.chrome_visible = false;
+        editor.embedded_event_bridge = embedded_event_bridge;
         if hide_caret {
             editor.pending_focus = None;
             editor.active_entity_id = None;
