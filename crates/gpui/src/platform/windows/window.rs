@@ -1168,7 +1168,7 @@ fn register_window_class(icon_handle: HICON) {
             lpszClassName: PCWSTR(WINDOW_CLASS_NAME.as_ptr()),
             style: CS_HREDRAW | CS_VREDRAW,
             hInstance: get_module_handle().into(),
-            hbrBackground: unsafe { CreateSolidBrush(COLORREF(0x00000000)) },
+            hbrBackground: unsafe { CreateSolidBrush(COLORREF(0x00FFFFFF)) },
             ..Default::default()
         };
         unsafe { RegisterClassW(&wc) };
