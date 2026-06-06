@@ -40,7 +40,7 @@ SendMessage(hwnd, VTM_SETMARKDOWN, 0, (LPARAM)L"markdown");
 LRESULT len = SendMessage(hwnd, VTM_GETMARKDOWNLENGTH, 0, 0);
 ```
 
-返回当前 Markdown 源文本的 UTF-16 code unit 数，不含结尾 `NUL`。
+返回当前 Markdown 源文本的 UTF-16 code unit 数，不含结尾 `NUL`。控件初始化后会同步查询 GPUI Editor 的当前文档，因此包含用户在 DLL 控件内直接输入后的内容。
 
 ### `VTM_GETMARKDOWN`
 
@@ -261,7 +261,7 @@ size_t WINAPI Velotype_GetMarkdownLength(HWND hwnd);
 size_t WINAPI Velotype_GetMarkdown(HWND hwnd, wchar_t *buffer, size_t capacity);
 ```
 
-复制当前 Markdown 源文本到 `buffer`。返回完整内容所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。
+复制当前 Markdown 源文本到 `buffer`。返回完整内容所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。控件初始化后会同步查询 GPUI Editor 的当前文档，因此包含用户在 DLL 控件内直接输入后的内容。
 
 ### `Velotype_SetTheme`
 
@@ -283,6 +283,70 @@ BOOL WINAPI Velotype_SetLanguage(HWND hwnd, const wchar_t *language_id);
 ```
 
 设置控件语言。默认 `en-US`。
+
+### `Velotype_SetEditorKeyBinding`
+
+```c
+BOOL WINAPI Velotype_SetEditorKeyBinding(
+    HWND hwnd,
+    const wchar_t *command_id,
+    const wchar_t *keys
+);
+```
+
+为 DLL 控件定义/覆盖编辑相关热键。`keys` 可用 `;`、`,`、`|` 或换行分隔多个快捷键，例如：
+
+```c
+Velotype_SetEditorKeyBinding(hwnd, L"bold_selection", L"ctrl-alt-b;ctrl-b");
+```
+
+此 API 只接受 `BlockEditor` 上下文的编辑命令；`open_file`、`save_document`、`new_window` 等文件/菜单命令会返回 `FALSE`，不会被注册到 DLL 控件。
+
+可用编辑命令 ID：
+
+- `newline`
+- `delete_back`
+- `delete`
+- `word_delete_back`
+- `word_delete_forward`
+- `focus_prev`
+- `focus_next`
+- `move_left`
+- `move_right`
+- `word_move_left`
+- `word_move_right`
+- `home`
+- `end`
+- `block_up`
+- `block_down`
+- `select_left`
+- `select_right`
+- `word_select_left`
+- `word_select_right`
+- `select_home`
+- `select_end`
+- `select_all`
+- `copy`
+- `cut`
+- `paste`
+- `undo`
+- `bold_selection`
+- `italic_selection`
+- `underline_selection`
+- `code_selection`
+- `indent_block`
+- `outdent_block`
+- `exit_code_block`
+
+推荐在 `Velotype_InitializeControl` 前调用；初始化后调用也会重新安装 DLL 控件的编辑 keymap。
+
+### `Velotype_ResetEditorKeyBindings`
+
+```c
+BOOL WINAPI Velotype_ResetEditorKeyBindings(HWND hwnd);
+```
+
+清除通过 `Velotype_SetEditorKeyBinding` 设置的自定义编辑热键，并恢复 DLL 默认编辑热键。
 
 ### `Velotype_MarkdownToDisplayText`
 
@@ -347,6 +411,7 @@ DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", mark
 DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, "Int")
 DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
 DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
+DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "bold_selection", "Str", "ctrl-alt-b", "Int")
 ```
 
 宿主窗口收到 `WM_SIZE` 时应同步调整控件：

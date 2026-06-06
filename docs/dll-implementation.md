@@ -30,11 +30,29 @@
 `velotype.dll` 是嵌入式 Markdown 显示控件，当前 library crate 在非测试构建中使用 no-op app-menu shim：
 
 - 不安装 native/in-window menu。
-- 不注册 exe 的默认文件操作快捷键。
+- 只注册 `BlockEditor` 上下文的编辑快捷键，例如 Enter、Backspace、方向键、选择、复制/粘贴、Undo、格式化和缩进。
+- 不注册 exe 的默认文件操作快捷键，例如 `Ctrl+S`、`Ctrl+O`、`Ctrl+N`、`Ctrl+Q`。
+- 宿主可以通过 `Velotype_SetEditorKeyBinding` 覆盖编辑热键；该 API 只接受 `BlockEditor` 编辑命令 ID，拒绝文件/菜单命令 ID。
 - `OpenFile` / `SaveDocument` / `SaveDocumentAs` / 最近文件 / CLI 安装等菜单入口不作为 DLL 控件能力暴露。
 - 宿主需要的操作通过 DLL API 完成，例如 `Velotype_SetMarkdown`、`Velotype_SetTheme`、`Velotype_SetLanguage`。
 
 这避免 DLL 控件把宿主不需要的应用级菜单/文件操作行为带入嵌入场景，同时不影响 `velotype.exe`，因为 exe crate 仍然从 `src/main.rs` 加载真实模块。
+
+## 子控件键盘焦点
+
+GPUI 原 Windows 后端主要面向顶级窗口；鼠标点击由 GPUI 处理后不一定会继续走 Windows 默认焦点处理。嵌入为 `WS_CHILD` 后，这会导致控件内部可显示 caret，但 Windows 键盘焦点仍停留在宿主窗口，表现为不能输入。
+
+本分支在 GPUI Windows backend 的 mouse-down 处理里对当前 GPUI child HWND 调用 `SetFocus`，保证后续 `WM_KEYDOWN` / `WM_CHAR` 进入 GPUI 子控件。DLL 初始化同时安装 BlockEditor 编辑快捷键，保留输入、删除、导航、选择、复制/粘贴等编辑行为，但不恢复菜单/文件操作快捷键。
+
+## DLL 编辑热键配置
+
+`src/components/actions.rs` 保留完整 exe 快捷键定义，但额外提供 BlockEditor-only 解析路径：
+
+- `resolved_block_editor_keybindings(config)`
+- `install_block_editor_keybindings_with_config(cx, config)`
+- `is_block_editor_shortcut_id(id)`
+
+`src/windows_control.rs` 的 `ControlOptions::editor_keybindings` 保存宿主配置。初始化 GPUI 子控件时只安装 BlockEditor keymap；运行中调用 `Velotype_SetEditorKeyBinding` 会清空当前 DLL keymap 并按最新配置重新安装 BlockEditor keymap。因为 DLL GPUI application 不安装菜单/文件 keymap，`clear_key_bindings()` 不会移除宿主需要的菜单能力。
 
 ## GPUI 修改点
 
@@ -177,7 +195,9 @@ editor.replace_markdown(markdown, cx)
 - 调用 `Velotype_InitializeControl`
 - 调用 `Velotype_ShowControl`
 - 调用 `Velotype_SetTheme` / `Velotype_SetLanguage`
+- 调用 `Velotype_SetEditorKeyBinding` 验证编辑热键可自定义，并验证 `open_file` 等文件命令会被拒绝
 - 调用 `Velotype_MarkdownToDisplayText` / `Velotype_RenderMarkdownToHtml` 验证渲染相关 API 可用
+- 可选 `--test-input` 会点击 GPUI 子控件、发送文本，并用 `Velotype_GetMarkdown` 验证实际文档已更新
 - 在 AHK `WM_SIZE` 中用 `MoveWindow` 调整控件大小
 
 ## Release DLL 体积调查

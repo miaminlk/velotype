@@ -448,7 +448,10 @@ impl WindowsWindowInner {
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
-        unsafe { SetCapture(handle) };
+        unsafe {
+            SetFocus(Some(handle)).log_err();
+            SetCapture(handle);
+        }
         let mut lock = self.state.borrow_mut();
         let Some(mut func) = lock.callbacks.input.take() else {
             return Some(1);

@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
@@ -25,6 +26,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
+use crate::components::{
+    install_block_editor_keybindings_with_config, is_block_editor_shortcut_id,
+    normalize_shortcut_keys,
+};
 use crate::editor::Editor;
 use crate::export;
 use crate::i18n::I18nManager;
@@ -111,6 +116,8 @@ enum ControlCommand {
     SetMarkdown(String),
     SetTheme(String),
     SetLanguage(String),
+    SetEditorKeyBindings(BTreeMap<String, Vec<String>>),
+    GetMarkdown(mpsc::Sender<String>),
     Close,
 }
 
@@ -120,6 +127,7 @@ struct ControlOptions {
     resizable: bool,
     theme_id: String,
     language_id: String,
+    editor_keybindings: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for ControlOptions {
@@ -129,6 +137,7 @@ impl Default for ControlOptions {
             resizable: false,
             theme_id: "velotype-light".to_string(),
             language_id: "en-US".to_string(),
+            editor_keybindings: BTreeMap::new(),
         }
     }
 }
@@ -193,6 +202,45 @@ impl ControlState {
         if let Some(sender) = &self.command_sender {
             let _ = sender.send(ControlCommand::SetLanguage(language_id));
         }
+    }
+
+    fn set_editor_key_binding(&mut self, command_id: String, keys: Vec<String>) -> bool {
+        if !is_block_editor_shortcut_id(&command_id) || normalize_shortcut_keys(&keys).is_none() {
+            return false;
+        }
+        self.options.editor_keybindings.insert(command_id, keys);
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetEditorKeyBindings(
+                self.options.editor_keybindings.clone(),
+            ));
+        }
+        true
+    }
+
+    fn reset_editor_key_bindings(&mut self) {
+        self.options.editor_keybindings.clear();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetEditorKeyBindings(
+                self.options.editor_keybindings.clone(),
+            ));
+        }
+    }
+
+    fn current_markdown(&mut self) -> String {
+        if let Some(sender) = &self.command_sender {
+            let (reply_sender, reply_receiver) = mpsc::channel();
+            if sender
+                .send(ControlCommand::GetMarkdown(reply_sender))
+                .is_ok()
+            {
+                if let Ok(markdown) = reply_receiver.recv_timeout(Duration::from_millis(500)) {
+                    self.source_wide = wide_null(&markdown);
+                    self.source = markdown.clone();
+                    return markdown;
+                }
+            }
+        }
+        self.source.clone()
     }
 }
 
@@ -291,6 +339,7 @@ pub unsafe extern "system" fn Velotype_CreateControlEx(
             resizable: params.flags & VEL_CREATE_GPUI_RESIZABLE != 0,
             theme_id: unsafe { wide_ptr_to_string_or_default(params.theme_id, "velotype-light") },
             language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
+            editor_keybindings: BTreeMap::new(),
         },
         initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
     });
@@ -382,7 +431,11 @@ pub unsafe extern "system" fn Velotype_GetMarkdownLength(hwnd: HWND) -> usize {
     if hwnd.is_null() {
         return 0;
     }
-    unsafe { with_state(hwnd, |state| state.source.encode_utf16().count()) }
+    unsafe {
+        with_state(hwnd, |state| {
+            state.current_markdown().encode_utf16().count()
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -396,6 +449,7 @@ pub unsafe extern "system" fn Velotype_GetMarkdown(
     }
     unsafe {
         with_state(hwnd, |state| {
+            state.current_markdown();
             copy_utf16_required(&state.source_wide, buffer, capacity)
         })
     }
@@ -423,6 +477,37 @@ pub unsafe extern "system" fn Velotype_SetLanguage(hwnd: HWND, language_id: *con
         with_state(hwnd, |state| state.set_language(language_id));
     }
     TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetEditorKeyBinding(
+    hwnd: HWND,
+    command_id: *const u16,
+    keys: *const u16,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let command_id = unsafe { wide_ptr_to_string(command_id) };
+    let keys = parse_key_binding_list(&unsafe { wide_ptr_to_string(keys) });
+    unsafe {
+        with_state(hwnd, |state| {
+            state.set_editor_key_binding(command_id, keys) as BOOL
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_ResetEditorKeyBindings(hwnd: HWND) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            state.reset_editor_key_bindings();
+            TRUE
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -679,6 +764,7 @@ fn start_gpui_child(
             .run(move |cx: &mut App| {
                 I18nManager::init_with_language_id(cx, &options.language_id);
                 ThemeManager::init_with_theme_id(cx, &options.theme_id);
+                install_block_editor_keybindings_with_config(cx, &options.editor_keybindings);
 
                 let bounds = Bounds::new(
                     point(px(0.0), px(0.0)),
@@ -736,6 +822,20 @@ fn start_gpui_child(
                                         I18nManager::init_with_language_id(app, &language_id);
                                         app.refresh_windows();
                                     });
+                                }
+                                ControlCommand::SetEditorKeyBindings(config) => {
+                                    let _ = cx.update(|app| {
+                                        app.clear_key_bindings();
+                                        install_block_editor_keybindings_with_config(app, &config);
+                                    });
+                                }
+                                ControlCommand::GetMarkdown(reply_sender) => {
+                                    let markdown = handle
+                                        .update(cx, |editor, _window, cx| {
+                                            editor.serialized_document_text(cx)
+                                        })
+                                        .unwrap_or_default();
+                                    let _ = reply_sender.send(markdown);
                                 }
                                 ControlCommand::Close => {
                                     let _ = cx.update(|app| app.quit());
@@ -806,6 +906,15 @@ where
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn parse_key_binding_list(value: &str) -> Vec<String> {
+    value
+        .split([',', ';', '|', '\n', '\r'])
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
