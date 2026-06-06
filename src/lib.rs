@@ -1,6 +1,7 @@
 //! Velotype embeddable Windows control library.
 
 mod app_identity;
+#[allow(dead_code)]
 mod app_menu;
 mod components;
 #[allow(dead_code, unused_imports)]

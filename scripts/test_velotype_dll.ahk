@@ -23,19 +23,31 @@ if !FileExist(readme_path) {
 	ExitApp 1
 }
 markdown := FileRead(readme_path, "UTF-8")
+params := Buffer(80, 0)
+NumPut("UInt", 80, params, 0)
+NumPut("Ptr", main_gui.Hwnd, params, 8)
+NumPut("Int", 12, params, 16)
+NumPut("Int", 12, params, 20)
+NumPut("Int", 760, params, 24)
+NumPut("Int", 520, params, 28)
 global control_hwnd := DllCall(
-	dll_path "\Velotype_CreateAsChildControl",
-	"Ptr", main_gui.Hwnd,
-	"Int", 12,
-	"Int", 12,
-	"Int", 760,
-	"Int", 520,
-	"Str", markdown,
+	dll_path "\Velotype_CreateControlEx",
+	"Ptr", params,
 	"Ptr"
 )
 
 if !control_hwnd {
-	MsgBox "Velotype_CreateAsChildControl failed"
+	MsgBox "Velotype_CreateControlEx failed"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int") {
+	MsgBox "Velotype_InitializeControl failed"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, "Int") {
+	MsgBox "Velotype_ShowControl failed"
 	ExitApp 1
 }
 

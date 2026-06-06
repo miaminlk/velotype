@@ -1386,13 +1386,21 @@ impl Render for Editor {
         let c = &theme.colors;
         let visible_blocks = self.document.visible_blocks().to_vec();
         let editor = cx.entity().downgrade();
-        let has_menus = cx
-            .get_menus()
-            .map(|menus| !menus.is_empty())
-            .unwrap_or(false);
-        let titlebar_height = custom_titlebar_height(window, d);
-        let menu_bar_height =
-            in_window_menu_bar_height_for_target_os(std::env::consts::OS, has_menus, d);
+        let has_menus = self.chrome_visible
+            && cx
+                .get_menus()
+                .map(|menus| !menus.is_empty())
+                .unwrap_or(false);
+        let titlebar_height = if self.chrome_visible {
+            custom_titlebar_height(window, d)
+        } else {
+            0.0
+        };
+        let menu_bar_height = if self.chrome_visible {
+            in_window_menu_bar_height_for_target_os(std::env::consts::OS, has_menus, d)
+        } else {
+            0.0
+        };
         let scroll_trigger_padding = (d.block_min_height * 0.75).max(16.0);
         let max_scroll_y = f32::from(self.scroll_handle.max_offset().height.max(px(0.0)));
         let viewport_height = f32::from(viewport_bounds.size.height.max(px(1.0)));
@@ -1786,7 +1794,7 @@ impl Render for Editor {
         // cx.get_menus() and walked menus.iter().map(|m| m.name.to_string())
         // independently — two redundant Vec<OwnedMenu> + two redundant
         // Vec<String>-of-N-allocations per frame.
-        let menus = supports_in_window_menu()
+        let menus = (self.chrome_visible && supports_in_window_menu())
             .then(|| cx.get_menus())
             .flatten()
             .filter(|m| !m.is_empty());
@@ -1796,26 +1804,34 @@ impl Render for Editor {
             .unwrap_or_default();
         let window_title =
             Self::window_title(self.file_path.as_deref(), self.document_dirty, &strings);
-        let base = if let Some(titlebar) = render_custom_titlebar(
-            "editor-titlebar",
-            window_title.into(),
-            &theme,
-            window,
-            cx,
-            Self::on_titlebar_close,
-        ) {
-            base.child(titlebar)
+        let base = if self.chrome_visible {
+            if let Some(titlebar) = render_custom_titlebar(
+                "editor-titlebar",
+                window_title.into(),
+                &theme,
+                window,
+                cx,
+                Self::on_titlebar_close,
+            ) {
+                base.child(titlebar)
+            } else {
+                base
+            }
         } else {
             base
         };
-        let base = if let Some(menu_bar) = self.render_in_window_menu_bar(
-            &theme,
-            cx,
-            menus.as_deref(),
-            &menu_labels,
-            titlebar_height,
-        ) {
-            base.child(menu_bar)
+        let base = if self.chrome_visible {
+            if let Some(menu_bar) = self.render_in_window_menu_bar(
+                &theme,
+                cx,
+                menus.as_deref(),
+                &menu_labels,
+                titlebar_height,
+            ) {
+                base.child(menu_bar)
+            } else {
+                base
+            }
         } else {
             base
         };
@@ -1835,14 +1851,18 @@ impl Render for Editor {
             main_content
         };
         let base = base.child(main_content.child(content_area));
-        let base = if let Some(menu_panel) = self.render_in_window_menu_panel(
-            &theme,
-            cx,
-            menus.as_deref(),
-            &menu_labels,
-            titlebar_height,
-        ) {
-            base.child(menu_panel)
+        let base = if self.chrome_visible {
+            if let Some(menu_panel) = self.render_in_window_menu_panel(
+                &theme,
+                cx,
+                menus.as_deref(),
+                &menu_labels,
+                titlebar_height,
+            ) {
+                base.child(menu_panel)
+            } else {
+                base
+            }
         } else {
             base
         };
