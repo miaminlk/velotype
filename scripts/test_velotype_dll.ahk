@@ -51,6 +51,21 @@ if !DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, 
 	ExitApp 1
 }
 
+DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
+DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
+
+display_len := DllCall(dll_path "\Velotype_MarkdownToDisplayText", "Str", "# Velotype`n`n- smoke", "Ptr", 0, "UPtr", 0, "UPtr")
+if display_len = 0 {
+	MsgBox "Velotype_MarkdownToDisplayText failed"
+	ExitApp 1
+}
+
+html_len := DllCall(dll_path "\Velotype_RenderMarkdownToHtml", "Str", "# Velotype", "Str", "Smoke", "Str", "velotype-light", "Ptr", 0, "UPtr", 0, "UPtr")
+if html_len = 0 {
+	MsgBox "Velotype_RenderMarkdownToHtml failed"
+	ExitApp 1
+}
+
 OnMessage(0x0005, resize_control)
 main_gui.OnEvent("Close", (*) => ExitApp(0))
 main_gui.Show("w800 h560")

@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
@@ -26,10 +25,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 use windows_sys::core::BOOL;
 
-use crate::components::init_with_keybindings as init_editor;
 use crate::editor::Editor;
+use crate::export;
 use crate::i18n::I18nManager;
-use crate::theme::ThemeManager;
+use crate::markdown_display::markdown_to_display_text;
+use crate::theme::{Theme, ThemeManager};
 
 const CLASS_NAME: &[u16] = &[
     b'V' as u16,
@@ -47,6 +47,8 @@ pub const VTM_GETMARKDOWNLENGTH: u32 = WM_USER + 2;
 pub const VTM_GETMARKDOWN: u32 = WM_USER + 3;
 pub const VTM_INITIALIZE: u32 = WM_USER + 4;
 pub const VTM_SHOW: u32 = WM_USER + 5;
+pub const VTM_SETTHEME: u32 = WM_USER + 6;
+pub const VTM_SETLANGUAGE: u32 = WM_USER + 7;
 const VTM_CHILD_READY: u32 = WM_USER + 64;
 
 pub const VEL_CREATE_VISIBLE: u32 = 0x0000_0001;
@@ -107,6 +109,8 @@ impl AssetSource for VelotypeControlAssets {
 
 enum ControlCommand {
     SetMarkdown(String),
+    SetTheme(String),
+    SetLanguage(String),
     Close,
 }
 
@@ -174,6 +178,20 @@ impl ControlState {
         self.source = markdown.clone();
         if let Some(sender) = &self.command_sender {
             let _ = sender.send(ControlCommand::SetMarkdown(markdown));
+        }
+    }
+
+    fn set_theme(&mut self, theme_id: String) {
+        self.options.theme_id = theme_id.clone();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetTheme(theme_id));
+        }
+    }
+
+    fn set_language(&mut self, language_id: String) {
+        self.options.language_id = language_id.clone();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetLanguage(language_id));
         }
     }
 }
@@ -348,6 +366,94 @@ pub unsafe extern "system" fn Velotype_ShowControl(hwnd: HWND, show: BOOL) -> BO
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetMarkdown(hwnd: HWND, markdown: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let text = unsafe { wide_ptr_to_string(markdown) };
+    unsafe {
+        with_state(hwnd, |state| state.set_markdown(text));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_GetMarkdownLength(hwnd: HWND) -> usize {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe { with_state(hwnd, |state| state.source.encode_utf16().count()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_GetMarkdown(
+    hwnd: HWND,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            copy_utf16_required(&state.source_wide, buffer, capacity)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetTheme(hwnd: HWND, theme_id: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let theme_id = unsafe { wide_ptr_to_string_or_default(theme_id, "velotype-light") };
+    unsafe {
+        with_state(hwnd, |state| state.set_theme(theme_id));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetLanguage(hwnd: HWND, language_id: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let language_id = unsafe { wide_ptr_to_string_or_default(language_id, "en-US") };
+    unsafe {
+        with_state(hwnd, |state| state.set_language(language_id));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_MarkdownToDisplayText(
+    markdown: *const u16,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    let display_text = markdown_to_display_text(&unsafe { wide_ptr_to_string(markdown) });
+    let source = wide_null(&display_text);
+    unsafe { copy_utf16_required(&source, buffer, capacity) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_RenderMarkdownToHtml(
+    markdown: *const u16,
+    title: *const u16,
+    theme_id: *const u16,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    let markdown = unsafe { wide_ptr_to_string(markdown) };
+    let title = unsafe { wide_ptr_to_string_or_default(title, "Velotype") };
+    let theme_id = unsafe { wide_ptr_to_string_or_default(theme_id, "velotype-light") };
+    let theme = theme_for_id(&theme_id);
+    let html = export::render_html_with_base_dir(&markdown, &theme, &title, None);
+    let source = wide_null(&html);
+    unsafe { copy_utf16_required(&source, buffer, capacity) }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_CreateStandaloneWindow() -> HWND {
     let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
     let instance = if instance.is_null() {
@@ -462,6 +568,22 @@ unsafe extern "system" fn control_wnd_proc(
             }
             TRUE as LRESULT
         }
+        VTM_SETTHEME => {
+            let theme_id =
+                unsafe { wide_ptr_to_string_or_default(l_param as *const u16, "velotype-light") };
+            unsafe {
+                with_state(hwnd, |state| state.set_theme(theme_id));
+            }
+            TRUE as LRESULT
+        }
+        VTM_SETLANGUAGE => {
+            let language_id =
+                unsafe { wide_ptr_to_string_or_default(l_param as *const u16, "en-US") };
+            unsafe {
+                with_state(hwnd, |state| state.set_language(language_id));
+            }
+            TRUE as LRESULT
+        }
         WM_SETTEXT | VTM_SETMARKDOWN => {
             let text = unsafe { wide_ptr_to_string(l_param as *const u16) };
             unsafe {
@@ -557,8 +679,6 @@ fn start_gpui_child(
             .run(move |cx: &mut App| {
                 I18nManager::init_with_language_id(cx, &options.language_id);
                 ThemeManager::init_with_theme_id(cx, &options.theme_id);
-                crate::net::install_http_client(cx);
-                init_editor(cx, &BTreeMap::new());
 
                 let bounds = Bounds::new(
                     point(px(0.0), px(0.0)),
@@ -604,6 +724,18 @@ fn start_gpui_child(
                                         editor.replace_markdown(markdown, cx);
                                     });
                                     let _ = cx.refresh();
+                                }
+                                ControlCommand::SetTheme(theme_id) => {
+                                    let _ = cx.update(|app| {
+                                        ThemeManager::init_with_theme_id(app, &theme_id);
+                                        app.refresh_windows();
+                                    });
+                                }
+                                ControlCommand::SetLanguage(language_id) => {
+                                    let _ = cx.update(|app| {
+                                        I18nManager::init_with_language_id(app, &language_id);
+                                        app.refresh_windows();
+                                    });
                                 }
                                 ControlCommand::Close => {
                                     let _ = cx.update(|app| app.quit());
@@ -713,6 +845,26 @@ unsafe fn copy_utf16(value: &[u16], capacity: WPARAM, target: LPARAM) -> LRESULT
         *target.add(copy_count) = 0;
     }
     copy_count as LRESULT
+}
+
+unsafe fn copy_utf16_required(value: &[u16], target: *mut u16, capacity: usize) -> usize {
+    let count = utf16_len(value).max(0) as usize;
+    if !target.is_null() && capacity > 0 {
+        let copy_count = count.min(capacity.saturating_sub(1));
+        unsafe {
+            std::ptr::copy_nonoverlapping(value.as_ptr(), target, copy_count);
+            *target.add(copy_count) = 0;
+        }
+    }
+    count
+}
+
+fn theme_for_id(theme_id: &str) -> Theme {
+    if theme_id.eq_ignore_ascii_case("velotype-light") {
+        Theme::light_theme()
+    } else {
+        Theme::default_theme()
+    }
 }
 
 unsafe fn module_instance() -> HINSTANCE {

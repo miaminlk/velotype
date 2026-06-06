@@ -22,6 +22,8 @@ Velotype
 #define VTM_GETMARKDOWN        (WM_USER + 3)
 #define VTM_INITIALIZE         (WM_USER + 4)
 #define VTM_SHOW               (WM_USER + 5)
+#define VTM_SETTHEME           (WM_USER + 6)
+#define VTM_SETLANGUAGE        (WM_USER + 7)
 ```
 
 ### `VTM_SETMARKDOWN`
@@ -64,6 +66,22 @@ SendMessage(hwnd, VTM_SHOW, FALSE, 0); // hide
 ```
 
 显示或隐藏外层 child control。
+
+### `VTM_SETTHEME`
+
+```c
+SendMessage(hwnd, VTM_SETTHEME, 0, (LPARAM)L"velotype-light");
+```
+
+设置内部 GPUI Editor 的主题。空字符串或 `NULL` 使用 `velotype-light`。
+
+### `VTM_SETLANGUAGE`
+
+```c
+SendMessage(hwnd, VTM_SETLANGUAGE, 0, (LPARAM)L"en-US");
+```
+
+设置内部 GPUI Editor 的语言。空字符串或 `NULL` 使用 `en-US`。
 
 ## 导出函数
 
@@ -221,6 +239,77 @@ BOOL WINAPI Velotype_ShowControl(HWND hwnd, BOOL show);
 
 显示或隐藏外层 child control。
 
+### `Velotype_SetMarkdown`
+
+```c
+BOOL WINAPI Velotype_SetMarkdown(HWND hwnd, const wchar_t *markdown);
+```
+
+设置控件 Markdown 内容。等价于发送 `VTM_SETMARKDOWN`。
+
+### `Velotype_GetMarkdownLength`
+
+```c
+size_t WINAPI Velotype_GetMarkdownLength(HWND hwnd);
+```
+
+返回当前 Markdown 源文本的 UTF-16 code unit 数，不含结尾 `NUL`。
+
+### `Velotype_GetMarkdown`
+
+```c
+size_t WINAPI Velotype_GetMarkdown(HWND hwnd, wchar_t *buffer, size_t capacity);
+```
+
+复制当前 Markdown 源文本到 `buffer`。返回完整内容所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。
+
+### `Velotype_SetTheme`
+
+```c
+BOOL WINAPI Velotype_SetTheme(HWND hwnd, const wchar_t *theme_id);
+```
+
+设置控件主题。当前内置 ID：
+
+- `velotype-light`
+- `velotype`
+
+DLL 默认使用 `velotype-light`。
+
+### `Velotype_SetLanguage`
+
+```c
+BOOL WINAPI Velotype_SetLanguage(HWND hwnd, const wchar_t *language_id);
+```
+
+设置控件语言。默认 `en-US`。
+
+### `Velotype_MarkdownToDisplayText`
+
+```c
+size_t WINAPI Velotype_MarkdownToDisplayText(
+    const wchar_t *markdown,
+    wchar_t *buffer,
+    size_t capacity
+);
+```
+
+把 Markdown 转为纯文本显示内容。返回完整输出所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。可先用 `buffer = NULL, capacity = 0` 查询长度。
+
+### `Velotype_RenderMarkdownToHtml`
+
+```c
+size_t WINAPI Velotype_RenderMarkdownToHtml(
+    const wchar_t *markdown,
+    const wchar_t *title,
+    const wchar_t *theme_id,
+    wchar_t *buffer,
+    size_t capacity
+);
+```
+
+使用 Velotype 的 HTML export renderer 生成完整 HTML 文档（含主题 CSS）。返回完整输出所需 UTF-16 code unit 数，不含结尾 `NUL`；`capacity` 包含结尾 `NUL`。当前只解析内置主题 ID；空 `title` 使用 `Velotype`，空 `theme_id` 使用 `velotype-light`。
+
 ### `Velotype_CreateStandaloneWindow`
 
 ```c
@@ -256,10 +345,26 @@ control_hwnd := DllCall(
 
 DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int")
 DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, "Int")
+DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
+DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
 ```
 
 宿主窗口收到 `WM_SIZE` 时应同步调整控件：
 
 ```autohotkey
 DllCall("MoveWindow", "Ptr", control_hwnd, "Int", x, "Int", y, "Int", w, "Int", h, "Int", true)
+```
+
+查询 HTML 输出长度：
+
+```autohotkey
+html_len := DllCall(
+    dll_path "\Velotype_RenderMarkdownToHtml",
+    "Str", "# Velotype",
+    "Str", "Smoke",
+    "Str", "velotype-light",
+    "Ptr", 0,
+    "UPtr", 0,
+    "UPtr"
+)
 ```

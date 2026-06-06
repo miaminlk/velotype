@@ -12,6 +12,7 @@
    - 创建宿主可管理的外层 child HWND。
    - 在独立线程启动 GPUI `Application`。
    - 通过 `mpsc` 把宿主窗口消息转换为 Editor 更新命令。
+   - 暴露 Markdown 显示/渲染相关 DLL API，例如设置内容、切换主题/语言、生成纯文本显示内容、生成 HTML。
 
 2. `crates/gpui/`
    - 本地修改版 GPUI 0.2.2。
@@ -21,6 +22,19 @@
 3. `src/editor/*`
    - 继续使用 Velotype 原有 Markdown 解析、文档树、Block 渲染、Theme 和 GPUI 渲染流程。
    - DLL 控件使用 `Editor::from_markdown_embedded()`，只显示 Markdown 内容区，不显示 exe 上方的菜单和标题栏。
+
+## DLL 与 exe 的功能边界
+
+`velotype.exe` 仍然使用真实 `app_menu`、文件打开/保存、最近文件、偏好设置、CLI 安装、更新检查等应用层功能。
+
+`velotype.dll` 是嵌入式 Markdown 显示控件，当前 library crate 在非测试构建中使用 no-op app-menu shim：
+
+- 不安装 native/in-window menu。
+- 不注册 exe 的默认文件操作快捷键。
+- `OpenFile` / `SaveDocument` / `SaveDocumentAs` / 最近文件 / CLI 安装等菜单入口不作为 DLL 控件能力暴露。
+- 宿主需要的操作通过 DLL API 完成，例如 `Velotype_SetMarkdown`、`Velotype_SetTheme`、`Velotype_SetLanguage`。
+
+这避免 DLL 控件把宿主不需要的应用级菜单/文件操作行为带入嵌入场景，同时不影响 `velotype.exe`，因为 exe crate 仍然从 `src/main.rs` 加载真实模块。
 
 ## GPUI 修改点
 
@@ -94,6 +108,25 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
 
 这样宿主可以先创建控件，再配置/传入内容，最后显示。
 
+## Markdown 渲染相关 DLL API
+
+菜单中和显示/渲染相关、但对宿主仍有价值的能力迁移为显式 DLL API：
+
+- `Velotype_SetMarkdown`
+  - 设置控件 Markdown 内容。
+- `Velotype_GetMarkdownLength` / `Velotype_GetMarkdown`
+  - 读取控件当前 Markdown 源文本。
+- `Velotype_SetTheme`
+  - 切换内部 GPUI Editor 主题，默认 `velotype-light`。
+- `Velotype_SetLanguage`
+  - 切换内部 GPUI Editor 语言，默认 `en-US`。
+- `Velotype_MarkdownToDisplayText`
+  - 把 Markdown 转为纯文本显示内容。
+- `Velotype_RenderMarkdownToHtml`
+  - 使用 Velotype HTML export renderer 生成带主题 CSS 的 HTML 字符串。
+
+文件选择、保存路径 prompt、最近文件、偏好设置窗口等不迁移为 DLL API；这些属于宿主应用职责。
+
 ## 去掉菜单和标题栏
 
 DLL 控件不再调用 `app_menu::init()`，并且使用：
@@ -143,11 +176,13 @@ editor.replace_markdown(markdown, cx)
 - 调用 `Velotype_CreateControlEx`
 - 调用 `Velotype_InitializeControl`
 - 调用 `Velotype_ShowControl`
+- 调用 `Velotype_SetTheme` / `Velotype_SetLanguage`
+- 调用 `Velotype_MarkdownToDisplayText` / `Velotype_RenderMarkdownToHtml` 验证渲染相关 API 可用
 - 在 AHK `WM_SIZE` 中用 `MoveWindow` 调整控件大小
 
 ## Release DLL 体积调查
 
-当前 `target/release/velotype.dll` 约 37 MB，`target/release/velotype.exe` 约 34 MB。根 `Cargo.toml` 已启用：
+当前 `target/release/velotype.dll` 在剥离 DLL 菜单/快捷键初始化前约 37 MB；引入 DLL app-menu no-op shim、移除 DLL 默认 keybinding/http client 初始化后约 35 MB（实测 36,405,248 bytes）。`target/release/velotype.exe` 约 34 MB。根 `Cargo.toml` 已启用：
 
 ```toml
 [profile.release]
@@ -176,7 +211,7 @@ strip = true
 - 多个 tree-sitter grammar
 - image/webp/exr/jpeg/svg/text shaping 相关 crates
 
-这说明 DLL 体积大主要来自“复用完整 exe 渲染能力”的依赖集合，而不是单独 GPUI child-window 胶合代码。尤其是：
+这说明 DLL 体积大主要来自“复用完整 Markdown/GPUI 渲染能力”的依赖集合，而不是单独 GPUI child-window 胶合代码。尤其是：
 
 - Mermaid 渲染链路：`mermaid-rs-renderer`、`chromiumoxide`、`chromiumoxide_cdp`
 - 网络/更新/http 链路：`reqwest`、`rustls`、`aws_lc_*`
@@ -184,7 +219,7 @@ strip = true
 - 图片/SVG/字体排版：`image`、`usvg`、`tiny-skia`、`rustybuzz`、`ttf-parser`
 - LaTeX/公式：`ratex-*`
 
-若未来要把 DLL 从“完整 Velotype 渲染能力”裁剪成更小的“Markdown 阅读控件”，建议新增专用 feature，例如 `dll-control`：
+当前已经能通过 no-op app-menu shim 去掉 DLL 菜单/文件操作行为，但更明显的体积下降需要继续 feature-split 渲染能力。若未来要把 DLL 从“完整 Velotype 渲染能力”裁剪成更小的“Markdown 阅读控件”，建议新增专用 feature，例如 `dll-control`：
 
 - 默认保留 core Markdown + GPUI + Light theme。
 - 可选关闭 Mermaid。
