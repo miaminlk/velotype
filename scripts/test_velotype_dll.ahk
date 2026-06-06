@@ -51,6 +51,26 @@ if DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str",
 	ExitApp 1
 }
 
+if !DllCall(dll_path "\Velotype_SetControlBackgroundColor", "Ptr", control_hwnd, "UInt", 0x00F0F0F0, "Int") {
+	MsgBox "Velotype_SetControlBackgroundColor failed"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "editor_background", "Str", "FFFFFF", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for editor_background"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "font_size", "Str", "17", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for font_size"
+	ExitApp 1
+}
+
+if !DllCall(dll_path "\Velotype_SetThemeParameter", "Ptr", control_hwnd, "Str", "line_height", "Str", "1.6", "Int") {
+	MsgBox "Velotype_SetThemeParameter failed for line_height"
+	ExitApp 1
+}
+
 if !DllCall(dll_path "\Velotype_InitializeControl", "Ptr", control_hwnd, "Str", markdown, "Int") {
 	MsgBox "Velotype_InitializeControl failed"
 	ExitApp 1
@@ -63,6 +83,7 @@ if !DllCall(dll_path "\Velotype_ShowControl", "Ptr", control_hwnd, "Int", true, 
 
 DllCall(dll_path "\Velotype_SetTheme", "Ptr", control_hwnd, "Str", "velotype-light", "Int")
 DllCall(dll_path "\Velotype_SetLanguage", "Ptr", control_hwnd, "Str", "en-US", "Int")
+DllCall(dll_path "\Velotype_HideCaret", "Ptr", control_hwnd, "Int")
 if !DllCall(dll_path "\Velotype_SetEditorKeyBinding", "Ptr", control_hwnd, "Str", "italic_selection", "Str", "ctrl-alt-i", "Int") {
 	MsgBox "Velotype_SetEditorKeyBinding failed after initialize"
 	ExitApp 1
@@ -95,11 +116,11 @@ for arg in A_Args {
 }
 
 if test_input {
-	SetTimer test_keyboard_input, -1500
+	SetTimer test_keyboard_input, -2000
 }
 
 if auto_close {
-	SetTimer (() => ExitApp(0)), -3500
+	SetTimer (() => ExitApp(0)), -10000
 }
 
 resize_control(w_param, l_param, msg, hwnd) {
@@ -116,17 +137,34 @@ test_keyboard_input() {
 	global main_gui, control_hwnd, dll_path
 	main_gui.GetPos(&x, &y, &w, &h)
 	WinActivate "ahk_id " main_gui.Hwnd
+	if !DllCall(dll_path "\Velotype_SetCaretPosition", "Ptr", control_hwnd, "UInt", 0, "UInt", 0, "Int") {
+		MsgBox "Velotype_SetCaretPosition failed"
+		ExitApp 1
+	}
+	Sleep 300
 	Click x + 80, y + 80
-	Sleep 250
-	SendText "__DLL_INPUT_SMOKE__"
 	Sleep 500
+	SendText "__DLL_INPUT_SMOKE__"
+	Sleep 2000
 
-	required_len := DllCall(dll_path "\Velotype_GetMarkdownLength", "Ptr", control_hwnd, "UPtr")
-	buffer := Buffer((required_len + 1) * 2, 0)
-	DllCall(dll_path "\Velotype_GetMarkdown", "Ptr", control_hwnd, "Ptr", buffer, "UPtr", required_len + 1, "UPtr")
-	markdown_after_input := StrGet(buffer, "UTF-16")
+	; Retry readback up to 3 times with increasing delays
+	md_len := 0
+	loop 3 {
+		md_len := DllCall(dll_path "\Velotype_GetMarkdownLength", "Ptr", control_hwnd, "UPtr")
+		if md_len > 0 {
+			break
+		}
+		Sleep 1000
+	}
+	if md_len = 0 {
+		MsgBox "Velotype_GetMarkdownLength returned 0 after retries"
+		ExitApp 1
+	}
+	md_buf := Buffer((md_len + 1) * 2, 0)
+	DllCall(dll_path "\Velotype_GetMarkdown", "Ptr", control_hwnd, "Ptr", md_buf, "UPtr", md_len + 1, "UPtr")
+	markdown_after_input := StrGet(md_buf, "UTF-16")
 	if !InStr(markdown_after_input, "__DLL_INPUT_SMOKE__") {
-		MsgBox "Keyboard input did not update Markdown"
+		MsgBox "Keyboard input did not update Markdown`nGot: " SubStr(markdown_after_input, 1, 200)
 		ExitApp 1
 	}
 }

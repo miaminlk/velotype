@@ -453,6 +453,10 @@ pub struct ThemeDimensions {
     pub view_mode_toggle_text_size: f32,
 }
 
+fn default_text_font_family() -> String {
+    ".SystemUIFont".to_string()
+}
+
 /// All configurable typography settings (font sizes, weights, line heights).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeTypography {
@@ -460,6 +464,9 @@ pub struct ThemeTypography {
     pub text_size: f32,
     /// Default body text line height as a ratio of font size.
     pub text_line_height: f32,
+    /// Default body text font family.
+    #[serde(default = "default_text_font_family")]
+    pub text_font_family: String,
     /// H1 heading font size.
     pub h1_size: f32,
     /// H1 heading font weight.
@@ -1256,6 +1263,7 @@ impl Theme {
             typography: ThemeTypography {
                 text_size: 17.0,
                 text_line_height: 1.6,
+                text_font_family: default_text_font_family(),
                 h1_size: 32.0,
                 h1_weight: FontWeightDef::Bold,
                 h2_size: 24.0,
@@ -1291,7 +1299,7 @@ impl Theme {
         Self {
             name: BUILTIN_THEME_VELOTYPE_LIGHT_NAME.into(),
             colors: ThemeColors {
-                editor_background: Hsla::from(rgba(0xf7f8fbff)),
+                editor_background: Hsla::from(rgba(0xffffffff)),
                 source_mode_block_bg: Hsla::from(rgba(0xeef2f7ff)),
                 comment_bg: Hsla::from(rgba(0xfef3c766)),
                 text_default: Hsla::from(rgba(0x1f2937ff)),
@@ -1992,7 +2000,7 @@ mod tests {
         let light = Theme::light_theme();
 
         assert_eq!(light.name, "Velotype Light");
-        assert_eq!(light.colors.editor_background, rgba(0xf7f8fbff).into());
+        assert_eq!(light.colors.editor_background, rgba(0xffffffff).into());
         assert_eq!(light.colors.text_default, rgba(0x1f2937ff).into());
         assert_eq!(light.colors.text_link, rgba(0x2563ebff).into());
         assert_eq!(light.colors.code_bg, rgba(0xf1f5f9ff).into());
@@ -2115,7 +2123,7 @@ mod tests {
         assert_eq!(manager.current().name, "Velotype Light");
         assert_eq!(
             manager.current().colors.editor_background,
-            rgba(0xf7f8fbff).into()
+            rgba(0xffffffff).into()
         );
 
         assert!(manager.set_theme_by_id("velotype"));

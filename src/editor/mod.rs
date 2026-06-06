@@ -316,14 +316,58 @@ impl Editor {
         cx: &mut Context<Self>,
         markdown: String,
         file_path: Option<PathBuf>,
+        hide_caret: bool,
     ) -> Self {
         let mut editor = Self::from_markdown(cx, markdown, file_path);
         editor.chrome_visible = false;
+        if hide_caret {
+            editor.pending_focus = None;
+            editor.active_entity_id = None;
+        }
         editor
     }
 
     #[allow(dead_code)]
+    pub fn set_caret_position(
+        &mut self,
+        line: u32,
+        column: u32,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let visible = self.document.visible_blocks().to_vec();
+        let target_line = line as usize;
+        if target_line >= visible.len() {
+            return;
+        }
+        let block = &visible[target_line].entity;
+        let entity_id = block.entity_id();
+        let col = column as usize;
+        block.update(cx, |block, _cx| {
+            let len = block.visible_len();
+            let offset = col.min(len);
+            block.selected_range = offset..offset;
+            block.selection_reversed = false;
+            block.cursor_blink_epoch = std::time::Instant::now();
+        });
+        self.pending_focus = Some(entity_id);
+        self.active_entity_id = Some(entity_id);
+        self.pending_scroll_active_block_into_view = true;
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
+    pub fn hide_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_focus = None;
+        self.active_entity_id = None;
+        window.blur();
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
     pub fn replace_markdown(&mut self, markdown: String, cx: &mut Context<Self>) {
+        let was_caret_hidden =
+            !self.chrome_visible && self.pending_focus.is_none() && self.active_entity_id.is_none();
         let normalized = markdown.replace("\r\n", "\n").replace('\r', "\n");
         let mut roots = Self::build_root_blocks_from_markdown(cx, &normalized);
         if roots.is_empty() {
@@ -335,8 +379,13 @@ impl Editor {
         self.table_cells.clear();
         self.rebuild_table_runtimes(cx);
         self.rebuild_image_runtimes(cx);
-        self.pending_focus = self.first_focusable_entity_id(cx);
-        self.active_entity_id = self.pending_focus;
+        if was_caret_hidden {
+            self.pending_focus = None;
+            self.active_entity_id = None;
+        } else {
+            self.pending_focus = self.first_focusable_entity_id(cx);
+            self.active_entity_id = self.pending_focus;
+        }
         self.pending_scroll_active_block_into_view = true;
         self.pending_scroll_recheck_after_layout = true;
         self.document_dirty = false;
