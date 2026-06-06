@@ -13,8 +13,8 @@ use crate::components::{
     TableAxisKind, TableAxisMarker, TableCellInlineImageSegment, TableColumnLayout, attr_value,
     display_math_font_size, inline_math_font_size, parse_display_math_source,
     parse_html_image_block, parse_mermaid_fence_source, parse_table_cell_inline_images,
-    render_display_math_svg, render_inline_math_svg, render_mermaid_svg_for_display,
-    resolve_image_source, style_for_node,
+    parse_standalone_image, render_display_math_svg, render_inline_math_svg,
+    render_mermaid_svg_for_display, resolve_image_source, style_for_node,
 };
 use crate::i18n::{I18nManager, I18nStrings};
 use crate::theme::{Theme, ThemeDimensions, ThemeManager};
@@ -1060,12 +1060,7 @@ impl Block {
         }
 
         if node.tag_name == "#text" {
-            return div()
-                .min_w(px(0.0))
-                .text_size(px(inherited_style.font_size))
-                .text_color(inherited_style.color)
-                .child(SharedString::from(node.raw_source.clone()))
-                .into_any_element();
+            return self.render_html_text_node(node, theme, inherited_style, cx);
         }
 
         let node_style = html_node_visual_style(node, inherited_style, theme);
@@ -1261,6 +1256,70 @@ impl Block {
                 element.into_any_element()
             }
         }
+    }
+
+    fn render_html_text_node(
+        &self,
+        node: &HtmlNode,
+        theme: &Theme,
+        inherited_style: HtmlComputedStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let contains_image = node
+            .raw_source
+            .lines()
+            .any(|line| parse_standalone_image(line.trim()).is_some());
+
+        if !contains_image {
+            return div()
+                .min_w(px(0.0))
+                .text_size(px(inherited_style.font_size))
+                .text_color(inherited_style.color)
+                .child(SharedString::from(node.raw_source.clone()))
+                .into_any_element();
+        }
+
+        let mut children = Vec::new();
+        let strings = cx.global::<I18nManager>().strings_arc();
+
+        for line in node.raw_source.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(syntax) = parse_standalone_image(trimmed)
+                && let Some(runtime) = self.image_runtime_for_embedded_syntax(syntax)
+            {
+                children.push(self.render_image_content(
+                    &runtime,
+                    Length::Definite(relative(1.0)),
+                    px(theme.dimensions.image_root_max_height),
+                    px(theme.dimensions.image_root_placeholder_height),
+                    theme,
+                    &strings,
+                ));
+                continue;
+            }
+
+            let tree = self.inline_tree_from_markdown_with_context(trimmed);
+            children.push(self.render_inline_tree_runs(
+                &tree,
+                theme,
+                inherited_style.color,
+                inherited_style.font_size,
+                FontWeight::NORMAL,
+            ));
+        }
+
+        div()
+            .w_full()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .gap(px(theme.dimensions.block_gap * 0.4))
+            .children(children)
+            .into_any_element()
     }
 
     fn render_html_inline_container(

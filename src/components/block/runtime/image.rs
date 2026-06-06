@@ -36,6 +36,22 @@ impl Block {
         self.compute_image_runtime(self.image_base_dir.as_deref(), syntax)
     }
 
+    pub(crate) fn image_runtime_for_embedded_syntax(
+        &self,
+        syntax: ImageSyntax,
+    ) -> Option<ImageRuntime> {
+        let resolved_target = syntax.resolve_target(&self.image_reference_definitions)?;
+        Some(ImageRuntime {
+            alt: syntax.alt.clone(),
+            src: resolved_target.src.clone(),
+            title: resolved_target.title.clone(),
+            resolved_source: resolve_image_source(
+                &resolved_target.src,
+                self.image_base_dir.as_deref(),
+            ),
+        })
+    }
+
     pub(crate) fn image_base_dir(&self) -> Option<&Path> {
         self.image_base_dir.as_deref()
     }
