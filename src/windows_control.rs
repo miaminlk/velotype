@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
@@ -19,18 +18,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW,
     DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetParent,
     GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SetWindowLongPtrW, TranslateMessage, UnregisterClassW, WM_CREATE, WM_DESTROY,
-    WM_ERASEBKGND, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETTEXT,
-    WM_SIZE, WM_USER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    RegisterClassExW, SW_HIDE, SW_SHOW, SetWindowLongPtrW, ShowWindow, TranslateMessage,
+    UnregisterClassW, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETTEXT, WM_GETTEXTLENGTH,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_SETTEXT, WM_SIZE, WM_USER, WNDCLASSEXW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows_sys::core::BOOL;
 
-use crate::app_menu::init as init_app_menu;
-use crate::components::init_with_keybindings as init_editor;
 use crate::editor::Editor;
+use crate::export;
 use crate::i18n::I18nManager;
-use crate::theme::ThemeManager;
+use crate::markdown_display::markdown_to_display_text;
+use crate::theme::{Theme, ThemeManager};
 
 const CLASS_NAME: &[u16] = &[
     b'V' as u16,
@@ -46,7 +45,33 @@ const CLASS_NAME: &[u16] = &[
 pub const VTM_SETMARKDOWN: u32 = WM_USER + 1;
 pub const VTM_GETMARKDOWNLENGTH: u32 = WM_USER + 2;
 pub const VTM_GETMARKDOWN: u32 = WM_USER + 3;
+pub const VTM_INITIALIZE: u32 = WM_USER + 4;
+pub const VTM_SHOW: u32 = WM_USER + 5;
+pub const VTM_SETTHEME: u32 = WM_USER + 6;
+pub const VTM_SETLANGUAGE: u32 = WM_USER + 7;
 const VTM_CHILD_READY: u32 = WM_USER + 64;
+
+pub const VEL_CREATE_VISIBLE: u32 = 0x0000_0001;
+pub const VEL_CREATE_INITIALIZE: u32 = 0x0000_0002;
+pub const VEL_CREATE_GPUI_FOCUS: u32 = 0x0000_0004;
+pub const VEL_CREATE_GPUI_RESIZABLE: u32 = 0x0000_0008;
+
+#[repr(C)]
+pub struct VelotypeControlCreateParams {
+    pub cb_size: u32,
+    pub parent: HWND,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub ex_style: u32,
+    pub style: u32,
+    pub control_id: isize,
+    pub flags: u32,
+    pub markdown: *const u16,
+    pub theme_id: *const u16,
+    pub language_id: *const u16,
+}
 
 static INSTANCE: AtomicIsize = AtomicIsize::new(0);
 
@@ -84,7 +109,34 @@ impl AssetSource for VelotypeControlAssets {
 
 enum ControlCommand {
     SetMarkdown(String),
+    SetTheme(String),
+    SetLanguage(String),
     Close,
+}
+
+#[derive(Clone)]
+struct ControlOptions {
+    focus: bool,
+    resizable: bool,
+    theme_id: String,
+    language_id: String,
+}
+
+impl Default for ControlOptions {
+    fn default() -> Self {
+        Self {
+            focus: false,
+            resizable: false,
+            theme_id: "velotype-light".to_string(),
+            language_id: "en-US".to_string(),
+        }
+    }
+}
+
+struct CreateContext {
+    markdown: String,
+    options: ControlOptions,
+    initialize: bool,
 }
 
 struct ControlState {
@@ -92,16 +144,33 @@ struct ControlState {
     source_wide: Vec<u16>,
     command_sender: Option<mpsc::Sender<ControlCommand>>,
     child_hwnd: isize,
+    options: ControlOptions,
+    initialize_on_create: bool,
 }
 
 impl ControlState {
-    fn new() -> Self {
+    fn new(markdown: String, options: ControlOptions, initialize_on_create: bool) -> Self {
+        let source_wide = wide_null(&markdown);
         Self {
-            source: String::new(),
-            source_wide: wide_null(""),
+            source: markdown,
+            source_wide,
             command_sender: None,
             child_hwnd: 0,
+            options,
+            initialize_on_create,
         }
+    }
+
+    fn default_create_window() -> Self {
+        Self::new(String::new(), ControlOptions::default(), true)
+    }
+
+    fn initialize(&mut self, hwnd: HWND) -> bool {
+        if self.command_sender.is_some() {
+            return true;
+        }
+        self.command_sender = start_gpui_child(hwnd, self.source.clone(), self.options.clone());
+        self.command_sender.is_some()
     }
 
     fn set_markdown(&mut self, markdown: String) {
@@ -109,6 +178,20 @@ impl ControlState {
         self.source = markdown.clone();
         if let Some(sender) = &self.command_sender {
             let _ = sender.send(ControlCommand::SetMarkdown(markdown));
+        }
+    }
+
+    fn set_theme(&mut self, theme_id: String) {
+        self.options.theme_id = theme_id.clone();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetTheme(theme_id));
+        }
+    }
+
+    fn set_language(&mut self, language_id: String) {
+        self.options.language_id = language_id.clone();
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetLanguage(language_id));
         }
     }
 }
@@ -176,6 +259,60 @@ pub unsafe extern "system" fn Velotype_DirectFunction(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_CreateControlEx(
+    params: *const VelotypeControlCreateParams,
+) -> HWND {
+    if params.is_null() {
+        return null_mut();
+    }
+    let params = unsafe { &*params };
+    let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
+    let instance = if instance.is_null() {
+        unsafe { module_instance() }
+    } else {
+        instance
+    };
+    if params.parent.is_null() || !unsafe { register_class(instance) } {
+        return null_mut();
+    }
+    let style = if params.style == 0 {
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+    } else {
+        params.style
+    } | if params.flags & VEL_CREATE_VISIBLE != 0 {
+        WS_VISIBLE
+    } else {
+        0
+    };
+    let create_context = Box::new(CreateContext {
+        markdown: unsafe { wide_ptr_to_string(params.markdown) },
+        options: ControlOptions {
+            focus: params.flags & VEL_CREATE_GPUI_FOCUS != 0,
+            resizable: params.flags & VEL_CREATE_GPUI_RESIZABLE != 0,
+            theme_id: unsafe { wide_ptr_to_string_or_default(params.theme_id, "velotype-light") },
+            language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
+        },
+        initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
+    });
+    unsafe {
+        CreateWindowExW(
+            params.ex_style,
+            CLASS_NAME.as_ptr(),
+            null(),
+            style,
+            params.x,
+            params.y,
+            params.width.max(1),
+            params.height.max(1),
+            params.parent,
+            params.control_id as *mut c_void,
+            instance,
+            Box::into_raw(create_context) as *mut c_void,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_CreateAsChildControl(
     parent: HWND,
     x: i32,
@@ -184,31 +321,136 @@ pub unsafe extern "system" fn Velotype_CreateAsChildControl(
     height: i32,
     markdown: *const u16,
 ) -> HWND {
-    let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
-    let instance = if instance.is_null() {
-        unsafe { module_instance() }
-    } else {
-        instance
+    let params = VelotypeControlCreateParams {
+        cb_size: size_of::<VelotypeControlCreateParams>() as u32,
+        parent,
+        x,
+        y,
+        width,
+        height,
+        ex_style: 0,
+        style: 0,
+        control_id: 0,
+        flags: VEL_CREATE_VISIBLE | VEL_CREATE_INITIALIZE,
+        markdown,
+        theme_id: null(),
+        language_id: null(),
     };
-    if parent.is_null() || !unsafe { register_class(instance) } {
-        return null_mut();
+    unsafe { Velotype_CreateControlEx(&params) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_InitializeControl(hwnd: HWND, markdown: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
     }
     unsafe {
-        CreateWindowExW(
-            0,
-            CLASS_NAME.as_ptr(),
-            markdown,
-            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            x,
-            y,
-            width.max(1),
-            height.max(1),
-            parent,
-            null_mut(),
-            instance,
-            null_mut(),
-        )
+        with_state(hwnd, |state| {
+            if !markdown.is_null() {
+                state.set_markdown(wide_ptr_to_string(markdown));
+            }
+            state.initialize(hwnd) as BOOL
+        })
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_ShowControl(hwnd: HWND, show: BOOL) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        ShowWindow(hwnd, if show != 0 { SW_SHOW } else { SW_HIDE });
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetMarkdown(hwnd: HWND, markdown: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let text = unsafe { wide_ptr_to_string(markdown) };
+    unsafe {
+        with_state(hwnd, |state| state.set_markdown(text));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_GetMarkdownLength(hwnd: HWND) -> usize {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe { with_state(hwnd, |state| state.source.encode_utf16().count()) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_GetMarkdown(
+    hwnd: HWND,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    if hwnd.is_null() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            copy_utf16_required(&state.source_wide, buffer, capacity)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetTheme(hwnd: HWND, theme_id: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let theme_id = unsafe { wide_ptr_to_string_or_default(theme_id, "velotype-light") };
+    unsafe {
+        with_state(hwnd, |state| state.set_theme(theme_id));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetLanguage(hwnd: HWND, language_id: *const u16) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let language_id = unsafe { wide_ptr_to_string_or_default(language_id, "en-US") };
+    unsafe {
+        with_state(hwnd, |state| state.set_language(language_id));
+    }
+    TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_MarkdownToDisplayText(
+    markdown: *const u16,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    let display_text = markdown_to_display_text(&unsafe { wide_ptr_to_string(markdown) });
+    let source = wide_null(&display_text);
+    unsafe { copy_utf16_required(&source, buffer, capacity) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_RenderMarkdownToHtml(
+    markdown: *const u16,
+    title: *const u16,
+    theme_id: *const u16,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    let markdown = unsafe { wide_ptr_to_string(markdown) };
+    let title = unsafe { wide_ptr_to_string_or_default(title, "Velotype") };
+    let theme_id = unsafe { wide_ptr_to_string_or_default(theme_id, "velotype-light") };
+    let theme = theme_for_id(&theme_id);
+    let html = export::render_html_with_base_dir(&markdown, &theme, &title, None);
+    let source = wide_null(&html);
+    unsafe { copy_utf16_required(&source, buffer, capacity) }
 }
 
 #[unsafe(no_mangle)]
@@ -261,7 +503,18 @@ unsafe extern "system" fn control_wnd_proc(
 ) -> LRESULT {
     match message {
         WM_NCCREATE => {
-            let state = Box::new(ControlState::new());
+            let create = l_param as *const CREATESTRUCTW;
+            let state = if !create.is_null() && !unsafe { (*create).lpCreateParams }.is_null() {
+                let context =
+                    unsafe { Box::from_raw((*create).lpCreateParams as *mut CreateContext) };
+                Box::new(ControlState::new(
+                    context.markdown,
+                    context.options,
+                    context.initialize,
+                ))
+            } else {
+                Box::new(ControlState::default_create_window())
+            };
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
             }
@@ -278,9 +531,13 @@ unsafe extern "system" fn control_wnd_proc(
             }
             unsafe {
                 with_state(hwnd, |state| {
-                    state.source = initial_markdown.clone();
-                    state.source_wide = wide_null(&initial_markdown);
-                    state.command_sender = start_gpui_child(hwnd, initial_markdown);
+                    if !initial_markdown.is_empty() && state.source.is_empty() {
+                        state.source = initial_markdown.clone();
+                        state.source_wide = wide_null(&initial_markdown);
+                    }
+                    if state.initialize_on_create {
+                        state.initialize(hwnd);
+                    }
                 });
             }
             0
@@ -293,6 +550,39 @@ unsafe extern "system" fn control_wnd_proc(
                 });
             }
             0
+        }
+        VTM_INITIALIZE => {
+            let text = unsafe { wide_ptr_to_string(l_param as *const u16) };
+            unsafe {
+                with_state(hwnd, |state| {
+                    if !text.is_empty() {
+                        state.set_markdown(text);
+                    }
+                    state.initialize(hwnd) as LRESULT
+                })
+            }
+        }
+        VTM_SHOW => {
+            unsafe {
+                ShowWindow(hwnd, if w_param != 0 { SW_SHOW } else { SW_HIDE });
+            }
+            TRUE as LRESULT
+        }
+        VTM_SETTHEME => {
+            let theme_id =
+                unsafe { wide_ptr_to_string_or_default(l_param as *const u16, "velotype-light") };
+            unsafe {
+                with_state(hwnd, |state| state.set_theme(theme_id));
+            }
+            TRUE as LRESULT
+        }
+        VTM_SETLANGUAGE => {
+            let language_id =
+                unsafe { wide_ptr_to_string_or_default(l_param as *const u16, "en-US") };
+            unsafe {
+                with_state(hwnd, |state| state.set_language(language_id));
+            }
+            TRUE as LRESULT
         }
         WM_SETTEXT | VTM_SETMARKDOWN => {
             let text = unsafe { wide_ptr_to_string(l_param as *const u16) };
@@ -374,7 +664,11 @@ unsafe fn register_class(instance: HINSTANCE) -> bool {
     unsafe { GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
 }
 
-fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<ControlCommand>> {
+fn start_gpui_child(
+    hwnd: HWND,
+    markdown: String,
+    options: ControlOptions,
+) -> Option<mpsc::Sender<ControlCommand>> {
     let host_hwnd = hwnd as isize;
     let (width, height) = unsafe { client_size(hwnd) };
     let (command_sender, command_receiver) = mpsc::channel::<ControlCommand>();
@@ -383,11 +677,8 @@ fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<Control
         Application::new()
             .with_assets(VelotypeControlAssets)
             .run(move |cx: &mut App| {
-                I18nManager::init_with_language_id(cx, "en-US");
-                ThemeManager::init_with_theme_id(cx, "velotype-light");
-                crate::net::install_http_client(cx);
-                init_editor(cx, &BTreeMap::new());
-                init_app_menu(cx);
+                I18nManager::init_with_language_id(cx, &options.language_id);
+                ThemeManager::init_with_theme_id(cx, &options.theme_id);
 
                 let bounds = Bounds::new(
                     point(px(0.0), px(0.0)),
@@ -396,9 +687,9 @@ fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<Control
                 let options = WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: None,
-                    focus: false,
+                    focus: options.focus,
                     is_movable: false,
-                    is_resizable: false,
+                    is_resizable: options.resizable,
                     is_minimizable: false,
                     window_background: WindowBackgroundAppearance::Opaque,
                     parent_handle: Some(host_hwnd),
@@ -417,7 +708,7 @@ fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<Control
                                 );
                             }
                         }
-                        cx.new(move |cx| Editor::from_markdown(cx, markdown, None))
+                        cx.new(move |cx| Editor::from_markdown_embedded(cx, markdown, None))
                     })
                     .unwrap();
 
@@ -433,6 +724,18 @@ fn start_gpui_child(hwnd: HWND, markdown: String) -> Option<mpsc::Sender<Control
                                         editor.replace_markdown(markdown, cx);
                                     });
                                     let _ = cx.refresh();
+                                }
+                                ControlCommand::SetTheme(theme_id) => {
+                                    let _ = cx.update(|app| {
+                                        ThemeManager::init_with_theme_id(app, &theme_id);
+                                        app.refresh_windows();
+                                    });
+                                }
+                                ControlCommand::SetLanguage(language_id) => {
+                                    let _ = cx.update(|app| {
+                                        I18nManager::init_with_language_id(app, &language_id);
+                                        app.refresh_windows();
+                                    });
                                 }
                                 ControlCommand::Close => {
                                     let _ = cx.update(|app| app.quit());
@@ -516,6 +819,15 @@ unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }.as_ref())
 }
 
+unsafe fn wide_ptr_to_string_or_default(ptr: *const u16, default: &str) -> String {
+    let value = unsafe { wide_ptr_to_string(ptr) };
+    if value.is_empty() {
+        default.to_string()
+    } else {
+        value
+    }
+}
+
 fn utf16_len(value: &[u16]) -> isize {
     value.iter().position(|ch| *ch == 0).unwrap_or(value.len()) as isize
 }
@@ -533,6 +845,26 @@ unsafe fn copy_utf16(value: &[u16], capacity: WPARAM, target: LPARAM) -> LRESULT
         *target.add(copy_count) = 0;
     }
     copy_count as LRESULT
+}
+
+unsafe fn copy_utf16_required(value: &[u16], target: *mut u16, capacity: usize) -> usize {
+    let count = utf16_len(value).max(0) as usize;
+    if !target.is_null() && capacity > 0 {
+        let copy_count = count.min(capacity.saturating_sub(1));
+        unsafe {
+            std::ptr::copy_nonoverlapping(value.as_ptr(), target, copy_count);
+            *target.add(copy_count) = 0;
+        }
+    }
+    count
+}
+
+fn theme_for_id(theme_id: &str) -> Theme {
+    if theme_id.eq_ignore_ascii_case("velotype-light") {
+        Theme::light_theme()
+    } else {
+        Theme::default_theme()
+    }
 }
 
 unsafe fn module_instance() -> HINSTANCE {

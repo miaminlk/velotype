@@ -92,6 +92,7 @@ pub struct Editor {
     info_dialog: Option<InfoDialogKind>,
     /// True while an online update check is running in the background.
     update_check_in_progress: bool,
+    chrome_visible: bool,
     workspace: WorkspaceState,
     context_menu: Option<ContextMenuState>,
     table_insert_dialog: Option<TableInsertDialogState>,
@@ -273,6 +274,7 @@ impl Editor {
             drop_replace_restore_focus: None,
             info_dialog: None,
             update_check_in_progress: false,
+            chrome_visible: true,
             workspace: WorkspaceState::default(),
             context_menu: None,
             table_insert_dialog: None,
@@ -306,6 +308,17 @@ impl Editor {
         editor.pending_focus = editor.first_focusable_entity_id(cx);
         editor.active_entity_id = editor.pending_focus;
         editor.refresh_stable_document_snapshot(cx);
+        editor
+    }
+
+    #[allow(dead_code)]
+    pub fn from_markdown_embedded(
+        cx: &mut Context<Self>,
+        markdown: String,
+        file_path: Option<PathBuf>,
+    ) -> Self {
+        let mut editor = Self::from_markdown(cx, markdown, file_path);
+        editor.chrome_visible = false;
         editor
     }
 
