@@ -1,10 +1,10 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicIsize, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use gpui::*;
@@ -29,10 +29,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use windows_sys::core::BOOL;
 
 use crate::components::{
-    install_block_editor_keybindings_with_config, is_block_editor_shortcut_id,
-    normalize_shortcut_keys,
+    install_block_editor_keybindings_with_config, install_dll_host_event_keybindings_with_config,
+    is_dll_host_shortcut_id, normalize_shortcut_keys,
 };
-use crate::editor::Editor;
+use crate::editor::{Editor, EmbeddedEventBridge};
 use crate::export;
 use crate::i18n::I18nManager;
 use crate::markdown_display::markdown_to_display_text;
@@ -57,6 +57,7 @@ pub const VTM_SHOW: u32 = WM_USER + 5;
 pub const VTM_SETTHEME: u32 = WM_USER + 6;
 pub const VTM_SETLANGUAGE: u32 = WM_USER + 7;
 const VTM_CHILD_READY: u32 = WM_USER + 64;
+pub const VTM_NOTIFY_EVENT: u32 = WM_USER + 65;
 
 pub const VEL_CREATE_VISIBLE: u32 = 0x0000_0001;
 pub const VEL_CREATE_INITIALIZE: u32 = 0x0000_0002;
@@ -122,6 +123,7 @@ enum ControlCommand {
     GetMarkdown(mpsc::Sender<String>),
     SetThemeParameter(String, String),
     SetCaretPosition(u32, u32),
+    SetHostEventNames(BTreeSet<String>),
     HideCaret,
     Close,
 }
@@ -134,6 +136,8 @@ struct ControlOptions {
     language_id: String,
     editor_keybindings: BTreeMap<String, Vec<String>>,
     theme_params: BTreeMap<String, String>,
+    properties: BTreeMap<String, String>,
+    event_bridge: EmbeddedEventBridge,
     hide_caret: bool,
 }
 
@@ -146,6 +150,8 @@ impl Default for ControlOptions {
             language_id: "en-US".to_string(),
             editor_keybindings: BTreeMap::new(),
             theme_params: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            event_bridge: EmbeddedEventBridge::default(),
             hide_caret: true,
         }
     }
@@ -165,6 +171,8 @@ struct ControlState {
     options: ControlOptions,
     initialize_on_create: bool,
     background_color: u32,
+    event_hwnd: isize,
+    event_message: u32,
 }
 
 impl ControlState {
@@ -178,6 +186,8 @@ impl ControlState {
             options,
             initialize_on_create,
             background_color: 0x00F0F0F0,
+            event_hwnd: 0,
+            event_message: VTM_NOTIFY_EVENT,
         }
     }
 
@@ -222,7 +232,7 @@ impl ControlState {
     }
 
     fn set_editor_key_binding(&mut self, command_id: String, keys: Vec<String>) -> bool {
-        if !is_block_editor_shortcut_id(&command_id) || normalize_shortcut_keys(&keys).is_none() {
+        if !is_dll_host_shortcut_id(&command_id) || normalize_shortcut_keys(&keys).is_none() {
             return false;
         }
         self.options.editor_keybindings.insert(command_id, keys);
@@ -243,6 +253,71 @@ impl ControlState {
         }
     }
 
+    fn set_theme_parameter(&mut self, name: String, value: String) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        self.options
+            .theme_params
+            .insert(name.clone(), value.clone());
+        self.options
+            .properties
+            .insert(format!("theme.parameter.{name}"), value.clone());
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetThemeParameter(name, value));
+        }
+        true
+    }
+
+    fn set_host_event_callback(
+        &mut self,
+        hwnd: HWND,
+        notify_hwnd: HWND,
+        message_id: u32,
+        event_names: BTreeSet<String>,
+    ) -> bool {
+        let target = if notify_hwnd.is_null() {
+            0
+        } else {
+            notify_hwnd as isize
+        };
+        self.event_hwnd = target;
+        self.event_message = if message_id == 0 {
+            VTM_NOTIFY_EVENT
+        } else {
+            message_id
+        };
+        self.options.event_bridge.set_events(event_names.clone());
+        self.options
+            .properties
+            .insert("event.names".to_string(), join_event_names(&event_names));
+        self.options
+            .properties
+            .insert("event.message".to_string(), self.event_message.to_string());
+        self.options
+            .properties
+            .insert("event.notify_hwnd".to_string(), self.event_hwnd.to_string());
+
+        if target == 0 || event_names.is_empty() {
+            self.options.event_bridge.set_sink(None);
+        } else {
+            let message = self.event_message;
+            let source = hwnd as isize;
+            self.options
+                .event_bridge
+                .set_sink(Some(Arc::new(move |event| {
+                    let event_code = event_code(event);
+                    unsafe {
+                        PostMessageW(target as HWND, message, source as WPARAM, event_code);
+                    }
+                })));
+        }
+        if let Some(sender) = &self.command_sender {
+            let _ = sender.send(ControlCommand::SetHostEventNames(event_names));
+        }
+        true
+    }
+
     fn current_markdown(&mut self) -> String {
         if let Some(sender) = &self.command_sender {
             let (reply_sender, reply_receiver) = mpsc::channel();
@@ -258,6 +333,154 @@ impl ControlState {
             }
         }
         self.source.clone()
+    }
+
+    fn set_property(&mut self, hwnd: HWND, name: String, value: String) -> bool {
+        match name.as_str() {
+            "document.markdown" | "markdown" => self.set_markdown(value.clone()),
+            "theme.id" | "control.theme" => self.set_theme(if value.is_empty() {
+                "velotype-light".to_string()
+            } else {
+                value.clone()
+            }),
+            "language.id" | "control.language" => self.set_language(if value.is_empty() {
+                "en-US".to_string()
+            } else {
+                value.clone()
+            }),
+            "control.background_color" | "background_color" => {
+                if let Some(color) = parse_bgr_color(&value) {
+                    self.background_color = color;
+                } else {
+                    return false;
+                }
+            }
+            "control.visible" => unsafe {
+                ShowWindow(hwnd, if parse_bool(&value) { SW_SHOW } else { SW_HIDE });
+            },
+            "editor.caret" | "caret.position" => {
+                let Some((line, column)) = parse_line_column(&value) else {
+                    return false;
+                };
+                if let Some(sender) = &self.command_sender {
+                    let _ = sender.send(ControlCommand::SetCaretPosition(line, column));
+                }
+            }
+            "editor.hide_caret" | "caret.hidden" => {
+                self.options.hide_caret = parse_bool(&value);
+                if self.options.hide_caret
+                    && let Some(sender) = &self.command_sender
+                {
+                    let _ = sender.send(ControlCommand::HideCaret);
+                }
+            }
+            "event.names" => {
+                let events = parse_event_list(&value);
+                return self.set_host_event_callback(
+                    hwnd,
+                    self.event_hwnd as HWND,
+                    self.event_message,
+                    events,
+                );
+            }
+            "event.message" => {
+                let Ok(message) = value.parse::<u32>() else {
+                    return false;
+                };
+                let events = self.options.event_bridge.events();
+                return self.set_host_event_callback(
+                    hwnd,
+                    self.event_hwnd as HWND,
+                    message,
+                    events,
+                );
+            }
+            "event.notify_hwnd" => {
+                let Ok(target) = value.parse::<isize>() else {
+                    return false;
+                };
+                let events = self.options.event_bridge.events();
+                return self.set_host_event_callback(
+                    hwnd,
+                    target as HWND,
+                    self.event_message,
+                    events,
+                );
+            }
+            _ if name.starts_with("theme.parameter.") => {
+                let param = name.trim_start_matches("theme.parameter.").to_string();
+                return self.set_theme_parameter(param, value);
+            }
+            _ if name.starts_with("theme.") => {
+                let param = name.trim_start_matches("theme.").to_string();
+                return self.set_theme_parameter(param, value);
+            }
+            _ if name.starts_with("editor.keybinding.") => {
+                let command_id = name.trim_start_matches("editor.keybinding.").to_string();
+                return self.set_editor_key_binding(command_id, parse_key_binding_list(&value));
+            }
+            _ => {
+                self.options.properties.insert(name, value);
+                return true;
+            }
+        }
+        self.options.properties.insert(name, value);
+        true
+    }
+
+    fn get_property(&mut self, name: &str) -> String {
+        match name {
+            "document.markdown" | "markdown" => self.current_markdown(),
+            "document.length" | "markdown.length" => {
+                self.current_markdown().encode_utf16().count().to_string()
+            }
+            "document.display_text" => markdown_to_display_text(&self.current_markdown()),
+            "document.html" => {
+                let theme = theme_for_id(&self.options.theme_id);
+                export::render_html_with_base_dir(
+                    &self.current_markdown(),
+                    &theme,
+                    "Velotype",
+                    None,
+                )
+            }
+            "theme.id" | "control.theme" => self.options.theme_id.clone(),
+            "language.id" | "control.language" => self.options.language_id.clone(),
+            "control.background_color" | "background_color" => {
+                format!("{:06X}", self.background_color & 0x00FF_FFFF)
+            }
+            "control.child_hwnd" => self.child_hwnd.to_string(),
+            "control.initialized" => (self.command_sender.is_some() as u8).to_string(),
+            "editor.hide_caret" | "caret.hidden" => (self.options.hide_caret as u8).to_string(),
+            "event.names" => join_event_names(&self.options.event_bridge.events()),
+            "event.last" => self.options.event_bridge.last_event(),
+            "event.message" => self.event_message.to_string(),
+            "event.notify_hwnd" => self.event_hwnd.to_string(),
+            _ if name.starts_with("theme.parameter.") => self
+                .options
+                .theme_params
+                .get(name.trim_start_matches("theme.parameter."))
+                .cloned()
+                .unwrap_or_default(),
+            _ if name.starts_with("theme.") => self
+                .options
+                .theme_params
+                .get(name.trim_start_matches("theme."))
+                .cloned()
+                .unwrap_or_default(),
+            _ if name.starts_with("editor.keybinding.") => self
+                .options
+                .editor_keybindings
+                .get(name.trim_start_matches("editor.keybinding."))
+                .map(|keys| keys.join("|"))
+                .unwrap_or_default(),
+            _ => self
+                .options
+                .properties
+                .get(name)
+                .cloned()
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -358,6 +581,8 @@ pub unsafe extern "system" fn Velotype_CreateControlEx(
             language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
             editor_keybindings: BTreeMap::new(),
             theme_params: BTreeMap::new(),
+            properties: BTreeMap::new(),
+            event_bridge: EmbeddedEventBridge::default(),
             hide_caret: true,
         },
         initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
@@ -556,21 +781,7 @@ pub unsafe extern "system" fn Velotype_SetThemeParameter(
     }
     let name = unsafe { wide_ptr_to_string(param_name) };
     let value = unsafe { wide_ptr_to_string(param_value) };
-    if name.is_empty() {
-        return 0;
-    }
-    unsafe {
-        with_state(hwnd, |state| {
-            state
-                .options
-                .theme_params
-                .insert(name.clone(), value.clone());
-            if let Some(sender) = &state.command_sender {
-                let _ = sender.send(ControlCommand::SetThemeParameter(name, value));
-            }
-        });
-    }
-    TRUE
+    unsafe { with_state(hwnd, |state| state.set_theme_parameter(name, value) as BOOL) }
 }
 
 #[unsafe(no_mangle)]
@@ -605,6 +816,64 @@ pub unsafe extern "system" fn Velotype_HideCaret(hwnd: HWND) -> BOOL {
         });
     }
     TRUE
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetProperty(
+    hwnd: HWND,
+    property_name: *const u16,
+    property_value: *const u16,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let name = unsafe { wide_ptr_to_string(property_name) };
+    if name.is_empty() {
+        return 0;
+    }
+    let value = unsafe { wide_ptr_to_string(property_value) };
+    unsafe { with_state(hwnd, |state| state.set_property(hwnd, name, value) as BOOL) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_GetProperty(
+    hwnd: HWND,
+    property_name: *const u16,
+    buffer: *mut u16,
+    capacity: usize,
+) -> usize {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let name = unsafe { wide_ptr_to_string(property_name) };
+    if name.is_empty() {
+        return 0;
+    }
+    unsafe {
+        with_state(hwnd, |state| {
+            let value = state.get_property(&name);
+            let source = wide_null(&value);
+            copy_utf16_required(&source, buffer, capacity)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_RegisterEventCallback(
+    hwnd: HWND,
+    notify_hwnd: HWND,
+    message_id: u32,
+    event_names: *const u16,
+) -> BOOL {
+    if hwnd.is_null() {
+        return 0;
+    }
+    let event_names = parse_event_list(&unsafe { wide_ptr_to_string(event_names) });
+    unsafe {
+        with_state(hwnd, |state| {
+            state.set_host_event_callback(hwnd, notify_hwnd, message_id, event_names) as BOOL
+        })
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -853,6 +1122,7 @@ fn start_gpui_child(
 ) -> Option<mpsc::Sender<ControlCommand>> {
     let host_hwnd = hwnd as isize;
     let hide_caret = options.hide_caret;
+    let event_bridge = options.event_bridge.clone();
     let (width, height) = unsafe { client_size(hwnd) };
     let (command_sender, command_receiver) = mpsc::channel::<ControlCommand>();
     let builder = std::thread::Builder::new().name("VelotypeGpuiControl".to_string());
@@ -868,13 +1138,17 @@ fn start_gpui_child(
                         apply_theme_parameter(manager, name, value);
                     }
                 });
-                install_block_editor_keybindings_with_config(cx, &options.editor_keybindings);
+                install_dll_control_keybindings(
+                    cx,
+                    &options.editor_keybindings,
+                    &options.event_bridge.events(),
+                );
 
                 let bounds = Bounds::new(
                     point(px(0.0), px(0.0)),
                     size(px(width.max(1) as f32), px(height.max(1) as f32)),
                 );
-                let options = WindowOptions {
+                let window_options = WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: None,
                     focus: options.focus,
@@ -886,7 +1160,7 @@ fn start_gpui_child(
                     ..WindowOptions::default()
                 };
                 let handle = cx
-                    .open_window(options, move |window, cx| {
+                    .open_window(window_options, move |window, cx| {
                         let child_hwnd = raw_hwnd(window);
                         if child_hwnd != 0 {
                             unsafe {
@@ -899,11 +1173,18 @@ fn start_gpui_child(
                             }
                         }
                         cx.new(move |cx| {
-                            Editor::from_markdown_embedded(cx, markdown, None, hide_caret)
+                            Editor::from_markdown_embedded(
+                                cx,
+                                markdown,
+                                None,
+                                hide_caret,
+                                event_bridge,
+                            )
                         })
                     })
                     .unwrap();
 
+                let mut current_editor_keybindings = options.editor_keybindings.clone();
                 cx.spawn(async move |cx| {
                     loop {
                         cx.background_executor()
@@ -930,9 +1211,13 @@ fn start_gpui_child(
                                     });
                                 }
                                 ControlCommand::SetEditorKeyBindings(config) => {
+                                    current_editor_keybindings = config;
                                     let _ = cx.update(|app| {
-                                        app.clear_key_bindings();
-                                        install_block_editor_keybindings_with_config(app, &config);
+                                        install_dll_control_keybindings(
+                                            app,
+                                            &current_editor_keybindings,
+                                            &options.event_bridge.events(),
+                                        );
                                     });
                                 }
                                 ControlCommand::GetMarkdown(reply_sender) => {
@@ -949,6 +1234,15 @@ fn start_gpui_child(
                                             apply_theme_parameter(manager, &name, &value);
                                         });
                                         app.refresh_windows();
+                                    });
+                                }
+                                ControlCommand::SetHostEventNames(events) => {
+                                    let _ = cx.update(|app| {
+                                        install_dll_control_keybindings(
+                                            app,
+                                            &current_editor_keybindings,
+                                            &events,
+                                        );
                                     });
                                 }
                                 ControlCommand::SetCaretPosition(line, column) => {
@@ -1037,6 +1331,16 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+fn install_dll_control_keybindings(
+    cx: &mut App,
+    config: &BTreeMap<String, Vec<String>>,
+    events: &BTreeSet<String>,
+) {
+    cx.clear_key_bindings();
+    install_block_editor_keybindings_with_config(cx, config);
+    install_dll_host_event_keybindings_with_config(cx, config, events);
+}
+
 fn parse_key_binding_list(value: &str) -> Vec<String> {
     value
         .split([',', ';', '|', '\n', '\r'])
@@ -1044,6 +1348,55 @@ fn parse_key_binding_list(value: &str) -> Vec<String> {
         .filter(|key| !key.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn parse_event_list(value: &str) -> BTreeSet<String> {
+    value
+        .split([',', ';', '|', '\n', '\r'])
+        .map(str::trim)
+        .filter(|event| !event.is_empty())
+        .map(|event| event.to_ascii_lowercase())
+        .collect()
+}
+
+fn join_event_names(events: &BTreeSet<String>) -> String {
+    events
+        .iter()
+        .map(|event| format!("{event}|"))
+        .collect::<String>()
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "show" | "visible"
+    )
+}
+
+fn parse_bgr_color(value: &str) -> Option<u32> {
+    let trimmed = value
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches('#');
+    u32::from_str_radix(trimmed, 16)
+        .ok()
+        .map(|value| value & 0x00FF_FFFF)
+}
+
+fn parse_line_column(value: &str) -> Option<(u32, u32)> {
+    let mut parts = value.split([',', ':', '|']).map(str::trim);
+    let line = parts.next()?.parse::<u32>().ok()?;
+    let column = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    Some((line, column))
+}
+
+fn event_code(event: &str) -> LPARAM {
+    match event {
+        "save" => 1,
+        "change" => 2,
+        "save_as" => 3,
+        _ => 0,
+    }
 }
 
 unsafe fn wide_ptr_to_string(ptr: *const u16) -> String {

@@ -30,10 +30,11 @@
 `velotype.dll` 是嵌入式 Markdown 显示控件，当前 library crate 在非测试构建中使用 no-op app-menu shim：
 
 - 不安装 native/in-window menu。
-- 只注册 `BlockEditor` 上下文的编辑快捷键，例如 Enter、Backspace、方向键、选择、复制/粘贴、Undo、格式化和缩进。
-- 不注册 exe 的默认文件操作快捷键，例如 `Ctrl+S`、`Ctrl+O`、`Ctrl+N`、`Ctrl+Q`。
-- 宿主可以通过 `Velotype_SetEditorKeyBinding` 覆盖编辑热键；该 API 只接受 `BlockEditor` 编辑命令 ID，拒绝文件/菜单命令 ID。
-- `OpenFile` / `SaveDocument` / `SaveDocumentAs` / 最近文件 / CLI 安装等菜单入口不作为 DLL 控件能力暴露。
+- 只默认注册 `BlockEditor` 上下文的编辑快捷键，例如 Enter、Backspace、方向键、选择、复制/粘贴、Undo、格式化和缩进。
+- 不默认注册 exe 的文件操作快捷键，例如 `Ctrl+S`、`Ctrl+O`、`Ctrl+N`、`Ctrl+Q`。
+- 宿主注册 `save` / `save_as` 事件后，DLL 会额外注册对应保存热键，但只通过窗口消息通知宿主，不在 DLL 内部执行文件保存。
+- 宿主可以通过 `Velotype_SetEditorKeyBinding` 或 `editor.keybinding.<id>` 属性覆盖编辑热键及 `save_document` / `save_document_as` 事件热键；其它文件/菜单命令仍被拒绝。
+- `OpenFile` / 最近文件 / CLI 安装等菜单入口不作为 DLL 控件能力暴露。
 - 宿主需要的操作通过 DLL API 完成，例如 `Velotype_SetMarkdown`、`Velotype_SetTheme`、`Velotype_SetLanguage`。
 
 这避免 DLL 控件把宿主不需要的应用级菜单/文件操作行为带入嵌入场景，同时不影响 `velotype.exe`，因为 exe crate 仍然从 `src/main.rs` 加载真实模块。
@@ -46,13 +47,35 @@ GPUI 原 Windows 后端主要面向顶级窗口；鼠标点击由 GPUI 处理后
 
 ## DLL 编辑热键配置
 
-`src/components/actions.rs` 保留完整 exe 快捷键定义，但额外提供 BlockEditor-only 解析路径：
+`src/components/actions.rs` 保留完整 exe 快捷键定义，但额外提供 DLL 专用解析路径：
 
 - `resolved_block_editor_keybindings(config)`
 - `install_block_editor_keybindings_with_config(cx, config)`
-- `is_block_editor_shortcut_id(id)`
+- `resolved_dll_host_event_keybindings(config, events)`
+- `install_dll_host_event_keybindings_with_config(cx, config, events)`
+- `is_dll_host_shortcut_id(id)`
 
-`src/windows_control.rs` 的 `ControlOptions::editor_keybindings` 保存宿主配置。初始化 GPUI 子控件时只安装 BlockEditor keymap；运行中调用 `Velotype_SetEditorKeyBinding` 会清空当前 DLL keymap 并按最新配置重新安装 BlockEditor keymap。因为 DLL GPUI application 不安装菜单/文件 keymap，`clear_key_bindings()` 不会移除宿主需要的菜单能力。
+`src/windows_control.rs` 的 `ControlOptions::editor_keybindings` 保存宿主配置。初始化 GPUI 子控件时安装 BlockEditor keymap，并在宿主事件中包含 `save` / `save_as` 时额外安装对应保存事件 keymap。运行中调用 `Velotype_SetEditorKeyBinding` 或更新事件集合会清空当前 DLL keymap 并按最新配置重新安装。因为 DLL GPUI application 不安装菜单/open/quit 等 keymap，`clear_key_bindings()` 不会移除宿主需要的菜单能力。
+
+## 统一属性和事件通知
+
+`Velotype_SetProperty` / `Velotype_GetProperty` 提供类似 `libmpv.dll` 的统一字符串属性入口。当前内置属性覆盖：
+
+- 控制层：初始化状态、外层背景色、内部 GPUI child HWND、可见性。
+- 文档层：Markdown 源文本、长度、display text、HTML。
+- 主题/语言层：主题 ID、语言 ID、`theme.parameter.<name>` 参数。
+- 编辑器层：caret 位置/隐藏状态、编辑与保存事件热键。
+- 事件层：`event.names`、`event.message`、`event.notify_hwnd`、`event.last`。
+
+未知属性会保存在 `ControlOptions::properties`，方便宿主先通过统一入口写入，再逐步把需要的属性扩展为真实行为。
+
+事件由 `EmbeddedEventBridge` 连接 Editor 与 Windows 控制层：
+
+1. 宿主调用 `Velotype_RegisterEventCallback(hwnd, notify_hwnd, message_id, L"save|change|")` 或设置 `event.names` 属性。
+2. DLL 保存事件集合并把保存事件 keymap 安装到 GPUI。
+3. `Editor::mark_dirty()` 触发 `change`；`Editor::on_save_document()` 触发 `save`。
+4. 如果对应事件已注册，bridge 记录 `event.last` 并调用 `PostMessageW(notify_hwnd, message_id, (WPARAM)hwnd, event_code)`。
+5. `save` 事件已注册时，`on_save_document()` 直接返回，不调用原始保存流程，因此不会弹出保存对话框或自行处理文件。
 
 ## GPUI 修改点
 
@@ -96,7 +119,7 @@ GPUI 仍然使用自己的 Windows message procedure、DirectX renderer、swap c
    - `I18nManager::init_with_language_id`
    - `ThemeManager::init_with_theme_id`
    - 应用 `ControlOptions::theme_params`
-   - 安装 BlockEditor 编辑热键
+   - 安装 BlockEditor 编辑热键和已注册的宿主事件热键
    - `init_editor`
 3. `WindowOptions.parent_handle = Some(host_hwnd)`。
 4. `cx.open_window(...)` 创建 GPUI child window。

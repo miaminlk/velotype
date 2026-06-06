@@ -674,6 +674,34 @@ pub(crate) fn is_block_editor_shortcut_id(id: &str) -> bool {
         .any(|definition| definition.id == id && definition.context == BLOCK_CONTEXT)
 }
 
+#[allow(dead_code)]
+pub(crate) fn is_dll_host_shortcut_id(id: &str) -> bool {
+    matches!(id, "save_document" | "save_document_as") || is_block_editor_shortcut_id(id)
+}
+
+#[allow(dead_code)]
+pub(crate) fn resolved_dll_host_event_keybindings(
+    config: &BTreeMap<String, Vec<String>>,
+    events: &BTreeSet<String>,
+) -> Vec<KeyBinding> {
+    let normalized = normalize_shortcut_config(config);
+    let mut bindings = Vec::new();
+    for definition in SHORTCUT_DEFINITIONS.iter().filter(|definition| {
+        (definition.id == "save_document" && events.contains("save"))
+            || (definition.id == "save_document_as" && events.contains("save_as"))
+    }) {
+        let keys = normalized
+            .get(definition.id)
+            .cloned()
+            .unwrap_or_else(|| default_keys(*definition));
+        bindings.extend(
+            keys.iter()
+                .map(|key| key_binding_for(definition.command, key, definition.context)),
+        );
+    }
+    bindings
+}
+
 pub(crate) fn install_keybindings(cx: &mut App, config: &BTreeMap<String, Vec<String>>) {
     cx.bind_keys(resolved_keybindings(config));
 }
@@ -684,6 +712,15 @@ pub(crate) fn install_block_editor_keybindings_with_config(
     config: &BTreeMap<String, Vec<String>>,
 ) {
     cx.bind_keys(resolved_block_editor_keybindings(config));
+}
+
+#[allow(dead_code)]
+pub(crate) fn install_dll_host_event_keybindings_with_config(
+    cx: &mut App,
+    config: &BTreeMap<String, Vec<String>>,
+    events: &BTreeSet<String>,
+) {
+    cx.bind_keys(resolved_dll_host_event_keybindings(config, events));
 }
 
 #[allow(dead_code)]
