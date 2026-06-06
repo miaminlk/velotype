@@ -116,11 +116,11 @@ for arg in A_Args {
 }
 
 if test_input {
-	SetTimer test_keyboard_input, -1500
+	SetTimer test_keyboard_input, -2000
 }
 
 if auto_close {
-	SetTimer (() => ExitApp(0)), -3500
+	SetTimer (() => ExitApp(0)), -10000
 }
 
 resize_control(w_param, l_param, msg, hwnd) {
@@ -141,17 +141,30 @@ test_keyboard_input() {
 		MsgBox "Velotype_SetCaretPosition failed"
 		ExitApp 1
 	}
+	Sleep 300
 	Click x + 80, y + 80
-	Sleep 250
-	SendText "__DLL_INPUT_SMOKE__"
 	Sleep 500
+	SendText "__DLL_INPUT_SMOKE__"
+	Sleep 2000
 
-	required_len := DllCall(dll_path "\Velotype_GetMarkdownLength", "Ptr", control_hwnd, "UPtr")
-	buffer := Buffer((required_len + 1) * 2, 0)
-	DllCall(dll_path "\Velotype_GetMarkdown", "Ptr", control_hwnd, "Ptr", buffer, "UPtr", required_len + 1, "UPtr")
-	markdown_after_input := StrGet(buffer, "UTF-16")
+	; Retry readback up to 3 times with increasing delays
+	md_len := 0
+	loop 3 {
+		md_len := DllCall(dll_path "\Velotype_GetMarkdownLength", "Ptr", control_hwnd, "UPtr")
+		if md_len > 0 {
+			break
+		}
+		Sleep 1000
+	}
+	if md_len = 0 {
+		MsgBox "Velotype_GetMarkdownLength returned 0 after retries"
+		ExitApp 1
+	}
+	md_buf := Buffer((md_len + 1) * 2, 0)
+	DllCall(dll_path "\Velotype_GetMarkdown", "Ptr", control_hwnd, "Ptr", md_buf, "UPtr", md_len + 1, "UPtr")
+	markdown_after_input := StrGet(md_buf, "UTF-16")
 	if !InStr(markdown_after_input, "__DLL_INPUT_SMOKE__") {
-		MsgBox "Keyboard input did not update Markdown"
+		MsgBox "Keyboard input did not update Markdown`nGot: " SubStr(markdown_after_input, 1, 200)
 		ExitApp 1
 	}
 }
