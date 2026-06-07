@@ -350,7 +350,12 @@ impl ControlState {
 
     fn set_property(&mut self, hwnd: HWND, name: String, value: String) -> bool {
         match name.as_str() {
-            "document.markdown" | "markdown" => self.set_markdown(value.clone()),
+			"network.proxy" | "proxy" =>
+			{
+				crate::net::set_proxy(value.clone());
+				return true;
+			}
+			"document.markdown" | "markdown" => self.set_markdown(value.clone()),
             "theme.id" | "control.theme" => self.set_theme(if value.is_empty() {
                 "velotype-light".to_string()
             } else {
@@ -1215,6 +1220,7 @@ fn start_gpui_child(
         Application::new()
             .with_assets(VelotypeControlAssets)
             .run(move |cx: &mut App| {
+				crate::net::install_http_client(cx);
                 I18nManager::init_with_language_id(cx, &options.language_id);
                 ThemeManager::init_with_theme_id(cx, &options.theme_id);
                 let theme_params = options.theme_params.clone();
