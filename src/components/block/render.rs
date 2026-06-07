@@ -424,51 +424,104 @@ impl Block {
         cx.notify();
     }
 
-    fn render_image_content(
-        &self,
-        runtime: &ImageRuntime,
-        max_width: Length,
-        max_height: Pixels,
-        placeholder_height: Pixels,
-        theme: &Theme,
-        strings: &I18nStrings,
-    ) -> AnyElement {
-        let c = &theme.colors;
-        let d = &theme.dimensions;
-        let t = &theme.typography;
-        let source = runtime.resolved_source.clone();
-        let placeholder_theme = theme.clone();
-        let loading_theme = theme.clone();
-        let placeholder_strings = strings.clone();
-        let loading_strings = strings.clone();
-        let runtime_for_fallback = runtime.clone();
-        let runtime_for_loading = runtime.clone();
+	fn render_image_content(
+		&self,
+		runtime: &ImageRuntime,
+		max_width: Length,
+		max_height: Pixels,
+		placeholder_height: Pixels,
+		theme: &Theme,
+		strings: &I18nStrings,
+		window: &Window,
+	) -> AnyElement {
+		let c = &theme.colors;
+		let d = &theme.dimensions;
+		let t = &theme.typography;
+		let source = runtime.resolved_source.clone();
+		let placeholder_theme = theme.clone();
+		let loading_theme = theme.clone();
+		let placeholder_strings = strings.clone();
+		let loading_strings = strings.clone();
+		let runtime_for_fallback = runtime.clone();
+		let runtime_for_loading = runtime.clone();
 
-        let image = match source {
-            ImageResolvedSource::Local(path) => img(path),
-            ImageResolvedSource::Remote(uri) => img(uri),
-        }
-        .max_w(max_width)
-        .max_h(max_height)
-        .object_fit(ObjectFit::Contain)
-        .with_fallback(move || {
-            render_image_placeholder(
-                &runtime_for_fallback,
-                max_width,
-                placeholder_height,
-                &placeholder_theme,
-                &placeholder_strings,
-            )
-        })
-        .with_loading(move || {
-            render_loading_placeholder(
-                &runtime_for_loading,
-                max_width,
-                placeholder_height,
-                &loading_theme,
-                &loading_strings,
-            )
-        });
+		let resolved_width = match max_width
+		{
+			Length::Definite(DefiniteLength::Absolute(px)) => px,
+			Length::Definite(DefiniteLength::Fraction(f)) =>
+			{
+				let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
+				let budget = match self.kind()
+				{
+					BlockKind::BulletedListItem | BlockKind::TaskListItem { .. } | BlockKind::NumberedListItem =>
+					{
+						effective_list_item_image_width(self, viewport_width, d)
+					}
+					_ =>
+					{
+						if self.is_table_cell()
+						{
+							effective_table_width(self, viewport_width, d) / 2.0
+						}
+						else
+						{
+							effective_image_width(self, viewport_width, d)
+						}
+					}
+				};
+				AbsoluteLength::Pixels(px(budget * f))
+			}
+			_ =>
+			{
+				let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
+				let budget = match self.kind()
+				{
+					BlockKind::BulletedListItem | BlockKind::TaskListItem { .. } | BlockKind::NumberedListItem =>
+					{
+						effective_list_item_image_width(self, viewport_width, d)
+					}
+					_ =>
+					{
+						if self.is_table_cell()
+						{
+							effective_table_width(self, viewport_width, d) / 2.0
+						}
+						else
+						{
+							effective_image_width(self, viewport_width, d)
+						}
+					}
+				};
+				AbsoluteLength::Pixels(px(budget))
+			}
+		};
+
+		let image = match source
+		{
+			ImageResolvedSource::Local(path) => img(path),
+			ImageResolvedSource::Remote(uri) => img(uri),
+		}
+		.w(resolved_width)
+		.max_h(max_height)
+		.object_fit(ObjectFit::Contain)
+		.with_fallback(move || {
+			render_image_placeholder(
+				&runtime_for_fallback,
+				max_width,
+				placeholder_height,
+				&placeholder_theme,
+				&placeholder_strings,
+			)
+		})
+		.with_loading(move || {
+			render_loading_placeholder(
+				&runtime_for_loading,
+				max_width,
+				placeholder_height,
+				&loading_theme,
+				&loading_strings,
+			)
+		});
 
         let mut container = div()
             .w_full()
@@ -999,527 +1052,583 @@ impl Block {
         )
     }
 
-    fn render_html_document(
-        &self,
-        document: &HtmlDocument,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = &theme.colors;
-        let d = &theme.dimensions;
-        let t = &theme.typography;
-        if !document.is_semantic() {
-            return div()
-                .w_full()
-                .rounded_sm()
-                .bg(c.source_mode_block_bg)
-                .px(px(d.block_padding_x))
-                .py(px(d.block_padding_y))
-                .text_size(px(t.code_size))
-                .text_color(c.text_default)
-                .child(SharedString::from(document.raw_source.clone()))
-                .into_any_element();
-        }
+	fn render_html_document(
+		&self,
+		document: &HtmlDocument,
+		theme: &Theme,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let c = &theme.colors;
+		let d = &theme.dimensions;
+		let t = &theme.typography;
+		if !document.is_semantic()
+		{
+			return div()
+				.w_full()
+				.rounded_sm()
+				.bg(c.source_mode_block_bg)
+				.px(px(d.block_padding_x))
+				.py(px(d.block_padding_y))
+				.text_size(px(t.code_size))
+				.text_color(c.text_default)
+				.child(SharedString::from(document.raw_source.clone()))
+				.into_any_element();
+		}
 
-        div()
-            .w_full()
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .gap(px(d.block_gap * 0.4))
-            .children(
-                document.nodes.iter().map(|node| {
-                    self.render_html_node(node, theme, HtmlComputedStyle::root(theme), cx)
-                }),
-            )
-            .into_any_element()
-    }
+		div()
+			.w_full()
+			.min_w(px(0.0))
+			.flex()
+			.flex_col()
+			.gap(px(d.block_gap * 0.4))
+			.children(
+				document.nodes.iter().map(|node| {
+					self.render_html_node(node, theme, HtmlComputedStyle::root(theme), window, cx)
+				}),
+			)
+			.into_any_element()
+	}
 
-    fn render_html_node(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        inherited_style: HtmlComputedStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = &theme.colors;
-        let d = &theme.dimensions;
-        let t = &theme.typography;
+	fn render_html_node(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		inherited_style: HtmlComputedStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let c = &theme.colors;
+		let d = &theme.dimensions;
+		let t = &theme.typography;
 
-        if node.kind == HtmlNodeKind::RawTextBlock {
-            return div()
-                .w_full()
-                .rounded_sm()
-                .bg(c.source_mode_block_bg)
-                .px(px(d.block_padding_x * 0.6))
-                .py(px(d.block_padding_y * 0.6))
-                .text_size(px(t.code_size))
-                .text_color(c.text_default)
-                .child(SharedString::from(node.raw_source.clone()))
-                .into_any_element();
-        }
+		if node.kind == HtmlNodeKind::RawTextBlock
+		{
+			return div()
+				.w_full()
+				.rounded_sm()
+				.bg(c.source_mode_block_bg)
+				.px(px(d.block_padding_x * 0.6))
+				.py(px(d.block_padding_y * 0.6))
+				.text_size(px(t.code_size))
+				.text_color(c.text_default)
+				.child(SharedString::from(node.raw_source.clone()))
+				.into_any_element();
+		}
 
-        if node.tag_name == "#text" {
-            return self.render_html_text_node(node, theme, inherited_style, cx);
-        }
+		if node.tag_name == "#text"
+		{
+			return self.render_html_text_node(node, theme, inherited_style, window, cx);
+		}
 
-        let node_style = html_node_visual_style(node, inherited_style, theme);
-        match node.tag_name.as_str() {
-            "strong" | "b" => {
-                self.render_html_inline_container(node, theme, node_style, FontWeight::BOLD, cx)
-            }
-            "em" | "i" | "span" | "abbr" | "dfn" | "time" | "u" | "ins" | "del" | "small"
-            | "sup" | "sub" | "a" => {
-                self.render_html_inline_container(node, theme, node_style, FontWeight::NORMAL, cx)
-            }
-            "mark" => {
-                self.render_html_inline_container(node, theme, node_style, FontWeight::NORMAL, cx)
-            }
-            "code" | "kbd" => {
-                let mut element =
-                    div()
-                        .flex()
-                        .rounded(px(4.0))
-                        .px(px(4.0))
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "q" => {
-                let mut element = div()
-                    .flex()
-                    .text_size(px(node_style.computed.font_size))
-                    .text_color(node_style.computed.color)
-                    .children([
-                        div().child("\u{201C}").into_any_element(),
-                        div()
-                            .children(node.children.iter().map(|child| {
-                                self.render_html_node(child, theme, node_style.computed, cx)
-                            }))
-                            .into_any_element(),
-                        div().child("\u{201D}").into_any_element(),
-                    ]);
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg).rounded(px(3.0)).px(px(2.0));
-                }
-                element.into_any_element()
-            }
-            "br" => div().child("\n").into_any_element(),
-            "hr" => div()
-                .w_full()
-                .h(px(d.separator_thickness))
-                .my(px(d.separator_margin_y))
-                .bg(c.separator_color)
-                .rounded(px(999.0))
-                .into_any_element(),
-            "blockquote" => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .pl(px(d.quote_padding_left))
-                        .border_l(px(d.quote_border_width))
-                        .border_color(c.border_quote)
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "pre" => {
-                let mut element = div()
-                    .w_full()
-                    .rounded_sm()
-                    .px(px(d.code_block_padding_x))
-                    .py(px(d.code_block_padding_y))
-                    .text_size(px(node_style.computed.font_size))
-                    .text_color(node_style.computed.color)
-                    .child(SharedString::from(html_children_text(node)));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "img" => self.render_html_image(node, theme, node_style, cx),
-            "table" => self.render_html_table(node, theme, node_style, cx),
-            "thead" | "tbody" | "tfoot" => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "tr" => self.render_html_table_row(node, theme, node_style, cx),
-            "th" | "td" => {
-                let mut element =
-                    div()
-                        .min_w(px(0.0))
-                        .flex_grow()
-                        .border(px(1.0))
-                        .border_color(c.table_border)
-                        .px(px(d.table_cell_padding_x))
-                        .py(px(d.table_cell_padding_y))
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .font_weight(if node.tag_name == "th" {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "details" => self.render_html_details(node, theme, node_style, cx),
-            "summary" => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "figure" => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(d.image_caption_gap))
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            "figcaption" => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .text_center()
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-            _ => {
-                let mut element =
-                    div()
-                        .w_full()
-                        .text_size(px(node_style.computed.font_size))
-                        .text_color(node_style.computed.color)
-                        .children(node.children.iter().map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        }));
-                if let Some(bg) = node_style.background {
-                    element = element.bg(bg);
-                }
-                element.into_any_element()
-            }
-        }
-    }
+		let node_style = html_node_visual_style(node, inherited_style, theme);
+		match node.tag_name.as_str()
+		{
+			"strong" | "b" =>
+			{
+				self.render_html_inline_container(node, theme, node_style, FontWeight::BOLD, window, cx)
+			}
+			"em" | "i" | "span" | "abbr" | "dfn" | "time" | "u" | "ins" | "del" | "small"
+			| "sup" | "sub" | "a" =>
+			{
+				self.render_html_inline_container(node, theme, node_style, FontWeight::NORMAL, window, cx)
+			}
+			"mark" =>
+			{
+				self.render_html_inline_container(node, theme, node_style, FontWeight::NORMAL, window, cx)
+			}
+			"code" | "kbd" =>
+			{
+				let mut element =
+					div()
+						.flex()
+						.rounded(px(4.0))
+						.px(px(4.0))
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"q" =>
+			{
+				let mut element = div()
+					.flex()
+					.text_size(px(node_style.computed.font_size))
+					.text_color(node_style.computed.color)
+					.children([
+						div().child("\u{201C}").into_any_element(),
+						div()
+							.children(node.children.iter().map(|child| {
+								self.render_html_node(child, theme, node_style.computed, window, cx)
+							}))
+							.into_any_element(),
+						div().child("\u{201D}").into_any_element(),
+					]);
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg).rounded(px(3.0)).px(px(2.0));
+				}
+				element.into_any_element()
+			}
+			"br" => div().child("\n").into_any_element(),
+			"hr" => div()
+				.w_full()
+				.h(px(d.separator_thickness))
+				.my(px(d.separator_margin_y))
+				.bg(c.separator_color)
+				.rounded(px(999.0))
+				.into_any_element(),
+			"blockquote" =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.pl(px(d.quote_padding_left))
+						.border_l(px(d.quote_border_width))
+						.border_color(c.border_quote)
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"pre" =>
+			{
+				let mut element = div()
+					.w_full()
+					.rounded_sm()
+					.px(px(d.code_block_padding_x))
+					.py(px(d.code_block_padding_y))
+					.text_size(px(node_style.computed.font_size))
+					.text_color(node_style.computed.color)
+					.child(SharedString::from(html_children_text(node)));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"img" => self.render_html_image(node, theme, node_style, window, cx),
+			"table" => self.render_html_table(node, theme, node_style, window, cx),
+			"thead" | "tbody" | "tfoot" =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.flex()
+						.flex_col()
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"tr" => self.render_html_table_row(node, theme, node_style, window, cx),
+			"th" | "td" =>
+			{
+				let mut element =
+					div()
+						.min_w(px(0.0))
+						.flex_grow()
+						.border(px(1.0))
+						.border_color(c.table_border)
+						.px(px(d.table_cell_padding_x))
+						.py(px(d.table_cell_padding_y))
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.font_weight(if node.tag_name == "th"
+						{
+							FontWeight::SEMIBOLD
+						}
+						else
+						{
+							FontWeight::NORMAL
+						})
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"details" => self.render_html_details(node, theme, node_style, window, cx),
+			"summary" =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.font_weight(FontWeight::SEMIBOLD)
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"figure" =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.flex()
+						.flex_col()
+						.items_center()
+						.gap(px(d.image_caption_gap))
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			"figcaption" =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.text_center()
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+			_ =>
+			{
+				let mut element =
+					div()
+						.w_full()
+						.text_size(px(node_style.computed.font_size))
+						.text_color(node_style.computed.color)
+						.children(node.children.iter().map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						}));
+				if let Some(bg) = node_style.background
+				{
+					element = element.bg(bg);
+				}
+				element.into_any_element()
+			}
+		}
+	}
 
-    fn render_html_text_node(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        inherited_style: HtmlComputedStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let contains_image = node
-            .raw_source
-            .lines()
-            .any(|line| parse_standalone_image(line.trim()).is_some());
+	fn render_html_text_node(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		inherited_style: HtmlComputedStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let contains_image = node
+			.raw_source
+			.lines()
+			.any(|line| parse_standalone_image(line.trim()).is_some());
 
-        if !contains_image {
-            return div()
-                .min_w(px(0.0))
-                .text_size(px(inherited_style.font_size))
-                .text_color(inherited_style.color)
-                .child(SharedString::from(node.raw_source.clone()))
-                .into_any_element();
-        }
+		if !contains_image
+		{
+			return div()
+				.min_w(px(0.0))
+				.text_size(px(inherited_style.font_size))
+				.text_color(inherited_style.color)
+				.child(SharedString::from(node.raw_source.clone()))
+				.into_any_element();
+		}
 
-        let mut children = Vec::new();
-        let strings = cx.global::<I18nManager>().strings_arc();
+		let mut children = Vec::new();
+		let strings = cx.global::<I18nManager>().strings_arc();
 
-        for line in node.raw_source.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+		for line in node.raw_source.lines()
+		{
+			let trimmed = line.trim();
+			if trimmed.is_empty()
+			{
+				continue;
+			}
 
-            if let Some(syntax) = parse_standalone_image(trimmed)
-                && let Some(runtime) = self.image_runtime_for_embedded_syntax(syntax)
-            {
-                children.push(self.render_image_content(
-                    &runtime,
-                    Length::Definite(relative(1.0)),
-                    px(theme.dimensions.image_root_max_height),
-                    px(theme.dimensions.image_root_placeholder_height),
-                    theme,
-                    &strings,
-                ));
-                continue;
-            }
+			if let Some(syntax) = parse_standalone_image(trimmed)
+				&& let Some(runtime) = self.image_runtime_for_embedded_syntax(syntax)
+			{
+				children.push(self.render_image_content(
+					&runtime,
+					Length::Definite(relative(1.0)),
+					px(theme.dimensions.image_root_max_height),
+					px(theme.dimensions.image_root_placeholder_height),
+					theme,
+					&strings,
+					window,
+				));
+				continue;
+			}
 
-            let tree = self.inline_tree_from_markdown_with_context(trimmed);
-            children.push(self.render_inline_tree_runs(
-                &tree,
-                theme,
-                inherited_style.color,
-                inherited_style.font_size,
-                FontWeight::NORMAL,
-            ));
-        }
+			let tree = self.inline_tree_from_markdown_with_context(trimmed);
+			children.push(self.render_inline_tree_runs(
+				&tree,
+				theme,
+				inherited_style.color,
+				inherited_style.font_size,
+				FontWeight::NORMAL,
+			));
+		}
 
-        div()
-            .w_full()
-            .min_w(px(0.0))
-            .flex()
-            .flex_col()
-            .gap(px(theme.dimensions.block_gap * 0.4))
-            .children(children)
-            .into_any_element()
-    }
+		div()
+			.w_full()
+			.min_w(px(0.0))
+			.flex()
+			.flex_col()
+			.gap(px(theme.dimensions.block_gap * 0.4))
+			.children(children)
+			.into_any_element()
+	}
 
-    fn render_html_inline_container(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        node_style: HtmlNodeVisualStyle,
-        weight: FontWeight,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut element = div()
-            .flex()
-            .min_w(px(0.0))
-            .text_size(px(node_style.computed.font_size))
-            .text_color(node_style.computed.color)
-            .font_weight(weight)
-            .children(
-                node.children
-                    .iter()
-                    .map(|child| self.render_html_node(child, theme, node_style.computed, cx)),
-            );
-        if let Some(bg) = node_style.background {
-            element = element.bg(bg).rounded(px(3.0)).px(px(2.0));
-        }
-        match node.tag_name.as_str() {
-            "sup" => {
-                element = element
-                    .relative()
-                    .top(px(-node_style.computed.font_size * 0.28))
-            }
-            "sub" => {
-                element = element
-                    .relative()
-                    .top(px(node_style.computed.font_size * 0.22))
-            }
-            _ => {}
-        }
-        element.into_any_element()
-    }
+	fn render_html_inline_container(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		node_style: HtmlNodeVisualStyle,
+		weight: FontWeight,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let mut element = div()
+			.flex()
+			.min_w(px(0.0))
+			.text_size(px(node_style.computed.font_size))
+			.text_color(node_style.computed.color)
+			.font_weight(weight)
+			.children(
+				node.children
+					.iter()
+					.map(|child| self.render_html_node(child, theme, node_style.computed, window, cx)),
+			);
+		if let Some(bg) = node_style.background
+		{
+			element = element.bg(bg).rounded(px(3.0)).px(px(2.0));
+		}
+		match node.tag_name.as_str()
+		{
+			"sup" =>
+			{
+				element = element
+					.relative()
+					.top(px(-node_style.computed.font_size * 0.28))
+			}
+			"sub" =>
+			{
+				element = element
+					.relative()
+					.top(px(node_style.computed.font_size * 0.22))
+			}
+			_ => {}
+		}
+		element.into_any_element()
+	}
 
-    fn render_html_image(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        node_style: HtmlNodeVisualStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let parsed_image = parse_html_image_block(&node.raw_source);
-        let src = parsed_image
-            .as_ref()
-            .map(|image| image.src.as_str())
-            .or_else(|| attr_value(node, "src"))
-            .filter(|src| !src.trim().is_empty());
-        let Some(src) = src else {
-            let mut element = div()
-                .text_size(px(node_style.computed.font_size))
-                .text_color(node_style.computed.color)
-                .child(SharedString::from(node.raw_source.clone()));
-            if let Some(bg) = node_style.background {
-                element = element.bg(bg);
-            }
-            return element.into_any_element();
-        };
-        let alt = parsed_image
-            .as_ref()
-            .map(|image| image.alt.clone())
-            .unwrap_or_else(|| attr_value(node, "alt").unwrap_or_default().to_string());
-        let zoom = parsed_image
-            .as_ref()
-            .map(|image| image.zoom_factor())
-            .unwrap_or(1.0);
-        let runtime = ImageRuntime {
-            alt,
-            src: src.to_string(),
-            title: None,
-            resolved_source: resolve_image_source(src, self.image_base_dir()),
-        };
-        let strings = cx.global::<I18nManager>().strings_arc();
-        let content = self.render_image_content(
-            &runtime,
-            Length::Definite(relative(zoom)),
-            px(theme.dimensions.image_root_max_height * zoom),
-            px(theme.dimensions.image_root_placeholder_height * zoom),
-            theme,
-            &strings,
-        );
-        if let Some(bg) = node_style.background {
-            div().w_full().bg(bg).child(content).into_any_element()
-        } else {
-            content
-        }
-    }
+	fn render_html_image(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		node_style: HtmlNodeVisualStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let parsed_image = parse_html_image_block(&node.raw_source);
+		let src = parsed_image
+			.as_ref()
+			.map(|image| image.src.as_str())
+			.or_else(|| attr_value(node, "src"))
+			.filter(|src| !src.trim().is_empty());
+		let Some(src) = src else
+		{
+			let mut element = div()
+				.text_size(px(node_style.computed.font_size))
+				.text_color(node_style.computed.color)
+				.child(SharedString::from(node.raw_source.clone()));
+			if let Some(bg) = node_style.background
+			{
+				element = element.bg(bg);
+			}
+			return element.into_any_element();
+		};
+		let alt = parsed_image
+			.as_ref()
+			.map(|image| image.alt.clone())
+			.unwrap_or_else(|| attr_value(node, "alt").unwrap_or_default().to_string());
+		let zoom = parsed_image
+			.as_ref()
+			.map(|image| image.zoom_factor())
+			.unwrap_or(1.0);
+		let runtime = ImageRuntime {
+			alt,
+			src: src.to_string(),
+			title: None,
+			resolved_source: resolve_image_source(src, self.image_base_dir()),
+		};
+		let strings = cx.global::<I18nManager>().strings_arc();
+		let content = self.render_image_content(
+			&runtime,
+			Length::Definite(relative(zoom)),
+			px(theme.dimensions.image_root_max_height * zoom),
+			px(theme.dimensions.image_root_placeholder_height * zoom),
+			theme,
+			&strings,
+			window,
+		);
+		if let Some(bg) = node_style.background
+		{
+			div().w_full().bg(bg).child(content).into_any_element()
+		}
+		else
+		{
+			content
+		}
+	}
 
-    fn render_html_table(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        node_style: HtmlNodeVisualStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut element = div()
-            .w_full()
-            .border(px(1.0))
-            .border_color(theme.colors.table_border)
-            .text_size(px(node_style.computed.font_size))
-            .text_color(node_style.computed.color)
-            .children(
-                node.children
-                    .iter()
-                    .map(|child| self.render_html_node(child, theme, node_style.computed, cx)),
-            );
-        if let Some(bg) = node_style.background {
-            element = element.bg(bg);
-        }
-        element.into_any_element()
-    }
+	fn render_html_table(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		node_style: HtmlNodeVisualStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let mut element = div()
+			.w_full()
+			.border(px(1.0))
+			.border_color(theme.colors.table_border)
+			.text_size(px(node_style.computed.font_size))
+			.text_color(node_style.computed.color)
+			.children(
+				node.children
+					.iter()
+					.map(|child| self.render_html_node(child, theme, node_style.computed, window, cx)),
+			);
+		if let Some(bg) = node_style.background
+		{
+			element = element.bg(bg);
+		}
+		element.into_any_element()
+	}
 
-    fn render_html_table_row(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        node_style: HtmlNodeVisualStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut element = div()
-            .w_full()
-            .flex()
-            .text_size(px(node_style.computed.font_size))
-            .text_color(node_style.computed.color)
-            .children(
-                node.children
-                    .iter()
-                    .map(|child| self.render_html_node(child, theme, node_style.computed, cx)),
-            );
-        if let Some(bg) = node_style.background {
-            element = element.bg(bg);
-        }
-        element.into_any_element()
-    }
+	fn render_html_table_row(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		node_style: HtmlNodeVisualStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let mut element = div()
+			.w_full()
+			.flex()
+			.text_size(px(node_style.computed.font_size))
+			.text_color(node_style.computed.color)
+			.children(
+				node.children
+					.iter()
+					.map(|child| self.render_html_node(child, theme, node_style.computed, window, cx)),
+			);
+		if let Some(bg) = node_style.background
+		{
+			element = element.bg(bg);
+		}
+		element.into_any_element()
+	}
 
-    fn render_html_details(
-        &self,
-        node: &HtmlNode,
-        theme: &Theme,
-        node_style: HtmlNodeVisualStyle,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let is_open = attr_value(node, "open").is_some() || self.html_details_open;
-        let summary = node
-            .children
-            .iter()
-            .find(|child| child.tag_name == "summary");
-        let body = node
-            .children
-            .iter()
-            .filter(|child| child.tag_name != "summary");
+	fn render_html_details(
+		&self,
+		node: &HtmlNode,
+		theme: &Theme,
+		node_style: HtmlNodeVisualStyle,
+		window: &Window,
+		cx: &mut Context<Self>,
+	) -> AnyElement {
+		let is_open = attr_value(node, "open").is_some() || self.html_details_open;
+		let summary = node
+			.children
+			.iter()
+			.find(|child| child.tag_name == "summary");
+		let body = node
+			.children
+			.iter()
+			.filter(|child| child.tag_name != "summary");
 
-        let mut container = div()
-            .w_full()
-            .rounded_sm()
-            .border(px(1.0))
-            .border_color(theme.colors.table_border)
-            .px(px(theme.dimensions.block_padding_x))
-            .py(px(theme.dimensions.block_padding_y))
-            .text_size(px(node_style.computed.font_size))
-            .text_color(node_style.computed.color)
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .gap(px(theme.dimensions.list_marker_gap))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(Self::on_html_details_toggle_mouse_down),
-                    )
-                    .child(if is_open { "\u{25BE}" } else { "\u{25B8}" })
-                    .children(summary.into_iter().map(|summary| {
-                        self.render_html_node(summary, theme, node_style.computed, cx)
-                    })),
-            );
-        if let Some(bg) = node_style.background {
-            container = container.bg(bg);
-        }
+		let mut container = div()
+			.w_full()
+			.rounded_sm()
+			.border(px(1.0))
+			.border_color(theme.colors.table_border)
+			.px(px(theme.dimensions.block_padding_x))
+			.py(px(theme.dimensions.block_padding_y))
+			.text_size(px(node_style.computed.font_size))
+			.text_color(node_style.computed.color)
+			.child(
+				div()
+					.w_full()
+					.flex()
+					.gap(px(theme.dimensions.list_marker_gap))
+					.font_weight(FontWeight::SEMIBOLD)
+					.cursor_pointer()
+					.on_mouse_down(
+						MouseButton::Left,
+						cx.listener(Self::on_html_details_toggle_mouse_down),
+					)
+					.child(if is_open { "\u{25BE}" } else { "\u{25B8}" })
+					.children(summary.into_iter().map(|summary| {
+						self.render_html_node(summary, theme, node_style.computed, window, cx)
+					})),
+			);
+		if let Some(bg) = node_style.background
+		{
+			container = container.bg(bg);
+		}
 
-        if is_open {
-            container =
-                container.child(
-                    div()
-                        .w_full()
-                        .pt(px(theme.dimensions.block_padding_y))
-                        .children(body.map(|child| {
-                            self.render_html_node(child, theme, node_style.computed, cx)
-                        })),
-                );
-        }
+		if is_open
+		{
+			container =
+				container.child(
+					div()
+						.w_full()
+						.pt(px(theme.dimensions.block_padding_y))
+						.children(body.map(|child| {
+							self.render_html_node(child, theme, node_style.computed, window, cx)
+						})),
+				);
+		}
 
-        container.into_any_element()
-    }
+		container.into_any_element()
+	}
 
     fn render_shell(
         &self,
@@ -1694,18 +1803,20 @@ impl Render for Block {
                 cell_base
             };
 
-            if showing_rendered_image && let Some(runtime) = self.image_runtime() {
-                return cell_base
-                    .child(self.render_image_content(
-                        runtime,
-                        Length::Definite(relative(1.0)),
-                        px(d.image_cell_max_height),
-                        px(d.image_cell_placeholder_height),
-                        &theme,
-                        &strings,
-                    ))
-                    .into_any_element();
-            }
+			if showing_rendered_image && let Some(runtime) = self.image_runtime()
+			{
+				return cell_base
+					.child(self.render_image_content(
+						runtime,
+						Length::Definite(relative(1.0)),
+						px(d.image_cell_max_height),
+						px(d.image_cell_placeholder_height),
+						&theme,
+						&strings,
+						window,
+					))
+					.into_any_element();
+			}
 
             if !focused
                 && let Some(inline_images) = self.render_table_cell_inline_images(
@@ -1802,22 +1913,25 @@ impl Render for Block {
             cx,
         );
 
-        if showing_rendered_image && self.kind() == BlockKind::Paragraph {
-            let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
-            let max_width = px(effective_image_width(self, viewport_width, d));
-            if let Some(runtime) = self.image_runtime() {
-                return focused_base
-                    .child(self.render_image_content(
-                        runtime,
-                        max_width.into(),
-                        px(d.image_root_max_height),
-                        px(d.image_root_placeholder_height),
-                        &theme,
-                        &strings,
-                    ))
-                    .into_any_element();
-            }
-        }
+		if showing_rendered_image && self.kind() == BlockKind::Paragraph
+		{
+			let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
+			let max_width = px(effective_image_width(self, viewport_width, d));
+			if let Some(runtime) = self.image_runtime()
+			{
+				return focused_base
+					.child(self.render_image_content(
+						runtime,
+						max_width.into(),
+						px(d.image_root_max_height),
+						px(d.image_root_placeholder_height),
+						&theme,
+						&strings,
+						window,
+					))
+					.into_any_element();
+			}
+		}
 
         let content = match self.kind() {
             BlockKind::Separator => focused_base
@@ -1947,35 +2061,42 @@ impl Render for Block {
                     div()
                         .min_w(px(d.list_marker_width))
                         .child(SharedString::new(bulleted_list_marker(self.render_depth))),
-                    if showing_rendered_image {
-                        let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
-                        let max_width =
-                            px(effective_list_item_image_width(self, viewport_width, d));
-                        if let Some(runtime) = self.image_runtime() {
-                            div().flex_grow().child(self.render_image_content(
-                                runtime,
-                                max_width.into(),
-                                px(d.image_root_max_height),
-                                px(d.image_root_placeholder_height),
-                                &theme,
-                                &strings,
-                            ))
-                        } else {
-                            div().min_w(px(0.0)).flex_grow().child(
-                                self.render_text_or_mixed_inline_visuals(
-                                    &theme,
-                                    focused,
-                                    is_placeholder,
-                                    None,
-                                    None,
-                                    c.text_default,
-                                    t.text_size,
-                                    FontWeight::NORMAL,
-                                    cx,
-                                ),
-                            )
-                        }
-                    } else {
+					if showing_rendered_image
+					{
+						let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
+						let max_width =
+							px(effective_list_item_image_width(self, viewport_width, d));
+						if let Some(runtime) = self.image_runtime()
+						{
+							div().flex_grow().child(self.render_image_content(
+								runtime,
+								max_width.into(),
+								px(d.image_root_max_height),
+								px(d.image_root_placeholder_height),
+								&theme,
+								&strings,
+								window,
+							))
+						}
+						else
+						{
+							div().min_w(px(0.0)).flex_grow().child(
+								self.render_text_or_mixed_inline_visuals(
+									&theme,
+									focused,
+									is_placeholder,
+									None,
+									None,
+									c.text_default,
+									t.text_size,
+									FontWeight::NORMAL,
+									cx,
+								),
+							)
+						}
+					}
+					else
+					{
                         div().min_w(px(0.0)).flex_grow().child(
                             self.render_text_or_mixed_inline_visuals(
                                 &theme,
@@ -2041,36 +2162,43 @@ impl Render for Block {
                                         SharedString::new("")
                                     }),
                             ),
-                        if showing_rendered_image {
-                            let viewport_width =
-                                f32::from(window.viewport_size().width.max(px(1.0)));
-                            let max_width =
-                                px(effective_list_item_image_width(self, viewport_width, d));
-                            if let Some(runtime) = self.image_runtime() {
-                                div().flex_grow().child(self.render_image_content(
-                                    runtime,
-                                    max_width.into(),
-                                    px(d.image_root_max_height),
-                                    px(d.image_root_placeholder_height),
-                                    &theme,
-                                    &strings,
-                                ))
-                            } else {
-                                div().min_w(px(0.0)).flex_grow().child(
-                                    self.render_text_or_mixed_inline_visuals(
-                                        &theme,
-                                        focused,
-                                        is_placeholder,
-                                        None,
-                                        None,
-                                        c.text_default,
-                                        t.text_size,
-                                        FontWeight::NORMAL,
-                                        cx,
-                                    ),
-                                )
-                            }
-                        } else {
+						if showing_rendered_image
+						{
+							let viewport_width =
+								f32::from(window.viewport_size().width.max(px(1.0)));
+							let max_width =
+								px(effective_list_item_image_width(self, viewport_width, d));
+							if let Some(runtime) = self.image_runtime()
+							{
+								div().flex_grow().child(self.render_image_content(
+									runtime,
+									max_width.into(),
+									px(d.image_root_max_height),
+									px(d.image_root_placeholder_height),
+									&theme,
+									&strings,
+									window,
+								))
+							}
+							else
+							{
+								div().min_w(px(0.0)).flex_grow().child(
+									self.render_text_or_mixed_inline_visuals(
+										&theme,
+										focused,
+										is_placeholder,
+										None,
+										None,
+										c.text_default,
+										t.text_size,
+										FontWeight::NORMAL,
+										cx,
+									),
+								)
+							}
+						}
+						else
+						{
                             div().min_w(px(0.0)).flex_grow().child(
                                 self.render_text_or_mixed_inline_visuals(
                                     &theme,
@@ -2104,35 +2232,42 @@ impl Render for Block {
                             self.render_depth,
                             self.list_ordinal.unwrap_or(1),
                         ))),
-                    if showing_rendered_image {
-                        let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
-                        let max_width =
-                            px(effective_list_item_image_width(self, viewport_width, d));
-                        if let Some(runtime) = self.image_runtime() {
-                            div().flex_grow().child(self.render_image_content(
-                                runtime,
-                                max_width.into(),
-                                px(d.image_root_max_height),
-                                px(d.image_root_placeholder_height),
-                                &theme,
-                                &strings,
-                            ))
-                        } else {
-                            div().min_w(px(0.0)).flex_grow().child(
-                                self.render_text_or_mixed_inline_visuals(
-                                    &theme,
-                                    focused,
-                                    is_placeholder,
-                                    None,
-                                    None,
-                                    c.text_default,
-                                    t.text_size,
-                                    FontWeight::NORMAL,
-                                    cx,
-                                ),
-                            )
-                        }
-                    } else {
+					if showing_rendered_image
+					{
+						let viewport_width = f32::from(window.viewport_size().width.max(px(1.0)));
+						let max_width =
+							px(effective_list_item_image_width(self, viewport_width, d));
+						if let Some(runtime) = self.image_runtime()
+						{
+							div().flex_grow().child(self.render_image_content(
+								runtime,
+								max_width.into(),
+								px(d.image_root_max_height),
+								px(d.image_root_placeholder_height),
+								&theme,
+								&strings,
+								window,
+							))
+						}
+						else
+						{
+							div().min_w(px(0.0)).flex_grow().child(
+								self.render_text_or_mixed_inline_visuals(
+									&theme,
+									focused,
+									is_placeholder,
+									None,
+									None,
+									c.text_default,
+									t.text_size,
+									FontWeight::NORMAL,
+									cx,
+								),
+							)
+						}
+					}
+					else
+					{
                         div().min_w(px(0.0)).flex_grow().child(
                             self.render_text_or_mixed_inline_visuals(
                                 &theme,
@@ -2782,22 +2917,23 @@ impl Render for Block {
                         .into_any_element()
                 }
             }
-            BlockKind::HtmlBlock => {
-                let html = self.record.html.as_ref().cloned().unwrap_or_else(|| {
-                    crate::components::parse_html_document(
-                        self.record
-                            .raw_fallback
-                            .as_deref()
-                            .unwrap_or_else(|| self.display_text()),
-                    )
-                });
-                focused_base
-                    .text_size(px(t.text_size))
-                    .text_color(c.text_default)
-                    .line_height(rems(t.text_line_height))
-                    .child(self.render_html_document(&html, &theme, cx))
-                    .into_any_element()
-            }
+			BlockKind::HtmlBlock =>
+			{
+				let html = self.record.html.as_ref().cloned().unwrap_or_else(|| {
+					crate::components::parse_html_document(
+						self.record
+							.raw_fallback
+							.as_deref()
+							.unwrap_or_else(|| self.display_text()),
+					)
+				});
+				focused_base
+					.text_size(px(t.text_size))
+					.text_color(c.text_default)
+					.line_height(rems(t.text_line_height))
+					.child(self.render_html_document(&html, &theme, window, cx))
+					.into_any_element()
+			}
             BlockKind::MathBlock => {
                 if !focused {
                     self.last_layout = None;
