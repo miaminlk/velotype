@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "velotype"
 version = "0.5.17"
 edition = "2024"
@@ -233,14 +233,11 @@ gpui_sum_tree = { opt-level = 3 }
 gpui_util = { opt-level = 3 }
 gpui_util_macros = { opt-level = 3 }
 gpui_collections = { opt-level = 3 }
-gpui_media = { opt-level = 3 }
 gpui_refineable = { opt-level = 3 }
 gpui_semantic_version = { opt-level = 3 }
 taffy = { opt-level = 3 }
-cosmic-text = { opt-level = 3 }
 rustybuzz = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
-zed-font-kit = { opt-level = 3 }
 unicode-segmentation = { opt-level = 3 }
 pulldown-cmark = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }

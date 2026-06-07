@@ -11,7 +11,7 @@ This is a custom branch of Velotype (a multi-platform Markdown editor). The targ
 - [ ] Clean up redundant and unused dependencies (0% probability libraries):
   - [ ] Remove `chromiumoxide` (Headless browser controller) from root dependencies.
   - [ ] Remove `scap` (Screen capture) dependency and feature flags.
-  - [ ] Remove/Disable optional cross-platform features (`media`, `objc2`, `ashpd`, X11/Wayland unused features).
+  - [x] Remove/Disable optional cross-platform features (`media`, `objc2`, `ashpd`, X11/Wayland unused features).
   - [ ] Refactor network dependencies: isolate or remove `reqwest`/`gpui_http_client` (substitute with host-provided FFI callbacks for fetching remote assets).
 - [ ] Implement Markdown rendering control interface in `Velotype.dll` (referencing `scintilla/` and WinAPI patterns).
 
