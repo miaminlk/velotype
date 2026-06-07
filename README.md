@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Velotype banner](https://pbs.twimg.com/media/GzglgK8bMAABV4U?format=jpg&name=large)
+![Velotype banner](d:\velotype-banner.png)
 
 **A Rust + GPUI native Markdown editor with WYSIWYG and source editing modes.**
 
