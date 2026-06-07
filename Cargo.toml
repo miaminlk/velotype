@@ -203,10 +203,6 @@ harness = false
 # Keep DWARF for samply / perf / cargo flamegraph; doesn't disable opts.
 debug = true
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
 
 
 # Keep our own code in dev (fast incremental compile, debuggable), but
