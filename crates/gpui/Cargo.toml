@@ -213,7 +213,7 @@ version = "0.2.2"
 package = "gpui-macros"
 
 [dependencies.http_client]
-version = "0.2.2"
+path = "../gpui_http_client"
 package = "gpui_http_client"
 
 [dependencies.image]
@@ -365,8 +365,7 @@ package = "gpui_collections"
 version = "0.11"
 
 [dev-dependencies.http_client]
-version = "0.2.2"
-features = ["test-support"]
+path = "../gpui_http_client"
 package = "gpui_http_client"
 
 [dev-dependencies.lyon]

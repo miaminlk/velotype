@@ -1,0 +1,17 @@
+[package]
+name = "gpui_http_client"
+version = "0.2.2"
+edition = "2024"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+futures = "0.3"
+http = "1"
+http-body = "1"
+parking_lot = "0.12"
+url = "2"
+derive_more = "0.99"
