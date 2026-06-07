@@ -41,7 +41,6 @@ default = [
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
 runtime_shaders = []
-screen-capture = ["scap"]
 test-support = [
     "leak-detection",
     "collections/test-support",
@@ -389,11 +388,6 @@ version = "0.2.2"
 features = ["test-support"]
 package = "gpui_util"
 
-[target.'cfg(target_os = "windows")'.dependencies.scap]
-version = "0.0.8-zed"
-optional = true
-default-features = false
-package = "zed-scap"
 
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.11"

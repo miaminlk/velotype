@@ -56,11 +56,11 @@
 
 我们将在接下来的步骤中，按照“依赖依赖性最弱 -> 逐步深入”的原则依次进行清理：
 
-*   [ ] **任务 1**：移除主项目 `Cargo.toml` 中的 **`chromiumoxide`** 依赖。
+* [x] **任务 1**：移除主项目 `Cargo.toml` 中的 **`chromiumoxide`** 依赖。
     *   清除可能残留的无头浏览器驱动或 PDF 导出逻辑。
-*   [ ] **任务 2**：在主项目和子项目中移除 **`scap`** 依赖。
+* [x] **任务 2**：在主项目和子项目中移除 **`scap`** 依赖。
     *   关闭 `scap` 相关的特征标记（Feature flags），修改 `gpui` 中与录屏相关的条件编译宏。
-*   [x] **任务 3**：关闭/禁用 Windows target 下无用的跨平台 Features。
+* [x] **任务 3**：关闭/禁用 Windows target 下无用的跨平台 Features。
     *   已成功移除 macOS (Metal, Cocoa, Core-Video等)、Linux (X11, Wayland, ashpd等) 特有的目标依赖项与特征配置。
-*   [ ] **任务 4**：重构网络请求逻辑。
+* [ ] **任务 4**：重构网络请求逻辑。
     *   在 `gpui` 中隔离 `http_client` 和主项目的 `reqwest`，设计简易的图片加载外部 FFI 回调接口。

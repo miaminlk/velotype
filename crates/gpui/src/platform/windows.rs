@@ -34,9 +34,6 @@ pub(crate) use wrapper::*;
 
 pub(crate) use windows::Win32::Foundation::HWND;
 
-#[cfg(feature = "screen-capture")]
-pub(crate) type PlatformScreenCaptureFrame = scap::frame::Frame;
-#[cfg(not(feature = "screen-capture"))]
 pub(crate) type PlatformScreenCaptureFrame = ();
 
 /// Set custom window class names on Windows to avoid name conflicts.

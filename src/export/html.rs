@@ -31,21 +31,7 @@ pub(crate) fn render_html_with_base_dir(
     render_html_document(markdown, theme, title, base_dir, &theme_css(theme))
 }
 
-/// Builds HTML tailored for Chromium's print-to-PDF pipeline.
-pub(crate) fn render_chromium_pdf_html_with_base_dir(
-    markdown: &str,
-    theme: &Theme,
-    title: &str,
-    base_dir: Option<&Path>,
-) -> String {
-    render_html_document(
-        markdown,
-        theme,
-        title,
-        base_dir,
-        &chromium_pdf_theme_css(theme),
-    )
-}
+
 
 fn render_html_document(
     markdown: &str,
@@ -891,60 +877,7 @@ hr {{ border: 0; border-top: 1px solid; border-color: var(--vlt-border); }}
     )
 }
 
-fn chromium_pdf_theme_css(theme: &Theme) -> String {
-    let mut css = theme_css(theme);
-    css = css.replace(
-        document_layout_css(),
-        ".vlt-document {\n  width: auto;\n  max-width: none;\n  margin: 0;\n  padding: 0;\n}",
-    );
-    css.push_str(
-        r#"
 
-@page {
-  size: A4;
-  margin: 15mm;
-}
-
-@media print {
-  html,
-  body {
-    background-color: var(--vlt-bg);
-    print-color-adjust: exact;
-    -webkit-print-color-adjust: exact;
-  }
-
-  .vlt-document {
-    width: auto;
-    max-width: none;
-    margin: 0;
-    padding: 0;
-  }
-
-  pre,
-  code {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  img,
-  svg {
-    max-width: 100%;
-    height: auto;
-    break-inside: avoid;
-  }
-
-  table,
-  blockquote,
-  pre,
-  .vlt-math,
-  .vlt-mermaid {
-    break-inside: avoid;
-  }
-}
-"#,
-    );
-    css
-}
 
 fn body_font_stack() -> &'static str {
     "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Serif Tibetan\", \"Noto Sans Tibetan\", \"Microsoft Himalaya\", Kailasa, \"BabelStone Tibetan\", sans-serif"

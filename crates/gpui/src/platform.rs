@@ -25,17 +25,6 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::set_window_class_names;
 
-#[cfg(all(
-    feature = "screen-capture",
-    any(
-        target_os = "windows",
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            any(feature = "wayland", feature = "x11"),
-        )
-    )
-))]
-pub(crate) mod scap_screen_capture;
 
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
