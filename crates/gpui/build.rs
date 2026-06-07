@@ -10,12 +10,6 @@ fn main() {
     let target = env::var("CARGO_CFG_TARGET_OS");
     println!("cargo::rustc-check-cfg=cfg(gles)");
 
-    #[cfg(any(
-        not(any(target_os = "macos", target_os = "windows")),
-        all(target_os = "macos", feature = "macos-blade")
-    ))]
-    check_wgsl_shaders();
-
     match target.as_deref() {
         Ok("macos") => {
             #[cfg(target_os = "macos")]
@@ -27,32 +21,6 @@ fn main() {
         }
         _ => (),
     };
-}
-
-#[cfg(any(
-    not(any(target_os = "macos", target_os = "windows")),
-    all(target_os = "macos", feature = "macos-blade")
-))]
-fn check_wgsl_shaders() {
-    use std::path::PathBuf;
-    use std::process;
-    use std::str::FromStr;
-
-    let shader_source_path = "./src/platform/blade/shaders.wgsl";
-    let shader_path = PathBuf::from_str(shader_source_path).unwrap();
-    println!("cargo:rerun-if-changed={}", &shader_path.display());
-
-    let shader_source = std::fs::read_to_string(&shader_path).unwrap();
-
-    match naga::front::wgsl::parse_str(&shader_source) {
-        Ok(_) => {
-            // All clear
-        }
-        Err(e) => {
-            println!("cargo::error=WGSL shader compilation failed:\n{}", e);
-            process::exit(1);
-        }
-    }
 }
 #[cfg(target_os = "macos")]
 mod macos {

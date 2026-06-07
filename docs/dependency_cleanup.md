@@ -62,5 +62,7 @@
     *   关闭 `scap` 相关的特征标记（Feature flags），修改 `gpui` 中与录屏相关的条件编译宏。
 * [x] **任务 3**：关闭/禁用 Windows target 下无用的跨平台 Features。
     *   已成功移除 macOS (Metal, Cocoa, Core-Video等)、Linux (X11, Wayland, ashpd等) 特有的目标依赖项与特征配置。
+* [x] **任务 3.5**：清理类别四（跨平台排版引擎与转译器 **`font-kit`**, **`cosmic-text`**, **`naga`**）。
+    *   已移除 `gpui/build.rs` 中对 `naga` 的无用 WGSL 检查引用。这些库在 Windows 直系构建链中均为 0% 使用率且不被打包。
 * [ ] **任务 4**：重构网络请求逻辑。
     *   在 `gpui` 中隔离 `http_client` 和主项目的 `reqwest`，设计简易的图片加载外部 FFI 回调接口。
