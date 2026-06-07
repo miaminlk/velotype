@@ -39,16 +39,29 @@ use crate::markdown_display::markdown_to_display_text;
 use crate::theme::{Theme, ThemeManager};
 
 const CLASS_NAME: &[u16] = &[
-    b'V' as u16,
-    b'e' as u16,
-    b'l' as u16,
-    b'o' as u16,
-    b't' as u16,
-    b'y' as u16,
-    b'p' as u16,
-    b'e' as u16,
-    0,
+	b'V' as u16,
+	b'e' as u16,
+	b'l' as u16,
+	b'o' as u16,
+	b't' as u16,
+	b'y' as u16,
+	b'p' as u16,
+	b'e' as u16,
+	0,
 ];
+
+static CUSTOM_CLASS_NAME: std::sync::RwLock<Option<Vec<u16>>> = std::sync::RwLock::new(None);
+
+fn with_class_name<R>(f: impl FnOnce(*const u16) -> R) -> R {
+	if let Ok(guard) = CUSTOM_CLASS_NAME.read()
+	{
+		if let Some(custom) = &*guard
+		{
+			return f(custom.as_ptr());
+		}
+	}
+	f(CLASS_NAME.as_ptr())
+}
 pub const VTM_SETMARKDOWN: u32 = WM_USER + 1;
 pub const VTM_GETMARKDOWNLENGTH: u32 = WM_USER + 2;
 pub const VTM_GETMARKDOWN: u32 = WM_USER + 3;
@@ -486,123 +499,181 @@ impl ControlState {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllMain(
-    h_instance: HINSTANCE,
-    reason: u32,
-    _reserved: *mut c_void,
+	h_instance: HINSTANCE,
+	reason: u32,
+	_reserved: *mut c_void,
 ) -> BOOL {
-    match reason {
-        DLL_PROCESS_ATTACH => {
-            INSTANCE.store(h_instance as isize, Ordering::SeqCst);
-            if unsafe { register_class(h_instance) } {
-                TRUE
-            } else {
-                0
-            }
-        }
-        DLL_PROCESS_DETACH => {
-            let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
-            if !instance.is_null() {
-                unsafe {
-                    UnregisterClassW(CLASS_NAME.as_ptr(), instance);
-                }
-            }
-            TRUE
-        }
-        _ => TRUE,
-    }
+	match reason {
+		DLL_PROCESS_ATTACH => {
+			INSTANCE.store(h_instance as isize, Ordering::SeqCst);
+			if unsafe { register_class(h_instance) }
+			{
+				TRUE
+			}
+			else
+			{
+				0
+			}
+		}
+		DLL_PROCESS_DETACH => {
+			let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
+			if !instance.is_null()
+			{
+				unsafe {
+					with_class_name(|class_name_ptr| {
+						UnregisterClassW(class_name_ptr, instance);
+					});
+				}
+			}
+			TRUE
+		}
+		_ => TRUE,
+	}
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Velotype_SetClassName(class_name: *const u16) -> BOOL {
+	if class_name.is_null()
+	{
+		return 0;
+	}
+	let name = unsafe { wide_ptr_to_string(class_name) };
+	if name.is_empty()
+	{
+		return 0;
+	}
+	
+	let gpui_window_class = format!("{}::Window", name);
+	let gpui_platform_window_class = format!("{}::PlatformWindow", name);
+	gpui::set_window_class_names(&gpui_window_class, &gpui_platform_window_class);
+
+	let wide = wide_null(&name);
+	if let Ok(mut guard) = CUSTOM_CLASS_NAME.write()
+	{
+		*guard = Some(wide);
+		TRUE
+	}
+	else
+	{
+		0
+	}
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_RegisterClasses(h_instance: HINSTANCE) -> BOOL {
-    let instance = if h_instance.is_null() {
-        unsafe { module_instance() }
-    } else {
-        h_instance
-    };
-    INSTANCE.store(instance as isize, Ordering::SeqCst);
-    unsafe { register_class(instance) as BOOL }
+	let instance = if h_instance.is_null()
+	{
+		unsafe { module_instance() }
+	}
+	else
+	{
+		h_instance
+	};
+	INSTANCE.store(instance as isize, Ordering::SeqCst);
+	unsafe { register_class(instance) as BOOL }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_UnregisterClasses(h_instance: HINSTANCE) -> BOOL {
-    let instance = if h_instance.is_null() {
-        INSTANCE.load(Ordering::SeqCst) as HINSTANCE
-    } else {
-        h_instance
-    };
-    if instance.is_null() {
-        return 0;
-    }
-    unsafe { UnregisterClassW(CLASS_NAME.as_ptr(), instance) as BOOL }
+	let instance = if h_instance.is_null()
+	{
+		INSTANCE.load(Ordering::SeqCst) as HINSTANCE
+	}
+	else
+	{
+		h_instance
+	};
+	if instance.is_null()
+	{
+		return 0;
+	}
+	unsafe {
+		with_class_name(|class_name_ptr| {
+			UnregisterClassW(class_name_ptr, instance) as BOOL
+		})
+	}
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_DirectFunction(
-    hwnd: HWND,
-    message: u32,
-    w_param: WPARAM,
-    l_param: LPARAM,
+	hwnd: HWND,
+	message: u32,
+	w_param: WPARAM,
+	l_param: LPARAM,
 ) -> LRESULT {
-    unsafe { control_wnd_proc(hwnd, message, w_param, l_param) }
+	unsafe { control_wnd_proc(hwnd, message, w_param, l_param) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_CreateControlEx(
-    params: *const VelotypeControlCreateParams,
+	params: *const VelotypeControlCreateParams,
 ) -> HWND {
-    if params.is_null() {
-        return null_mut();
-    }
-    let params = unsafe { &*params };
-    let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
-    let instance = if instance.is_null() {
-        unsafe { module_instance() }
-    } else {
-        instance
-    };
-    if params.parent.is_null() || !unsafe { register_class(instance) } {
-        return null_mut();
-    }
-    let style = if params.style == 0 {
-        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
-    } else {
-        params.style
-    } | if params.flags & VEL_CREATE_VISIBLE != 0 {
-        WS_VISIBLE
-    } else {
-        0
-    };
-    let create_context = Box::new(CreateContext {
-        markdown: unsafe { wide_ptr_to_string(params.markdown) },
-        options: ControlOptions {
-            focus: params.flags & VEL_CREATE_GPUI_FOCUS != 0,
-            resizable: params.flags & VEL_CREATE_GPUI_RESIZABLE != 0,
-            theme_id: unsafe { wide_ptr_to_string_or_default(params.theme_id, "velotype-light") },
-            language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
-            editor_keybindings: BTreeMap::new(),
-            theme_params: BTreeMap::new(),
-            properties: BTreeMap::new(),
-            event_bridge: EmbeddedEventBridge::default(),
-            hide_caret: true,
-        },
-        initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
-    });
-    unsafe {
-        CreateWindowExW(
-            params.ex_style,
-            CLASS_NAME.as_ptr(),
-            null(),
-            style,
-            params.x,
-            params.y,
-            params.width.max(1),
-            params.height.max(1),
-            params.parent,
-            params.control_id as *mut c_void,
-            instance,
-            Box::into_raw(create_context) as *mut c_void,
-        )
-    }
+	if params.is_null()
+	{
+		return null_mut();
+	}
+	let params = unsafe { &*params };
+	let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
+	let instance = if instance.is_null()
+	{
+		unsafe { module_instance() }
+	}
+	else
+	{
+		instance
+	};
+	if params.parent.is_null() || !unsafe { register_class(instance) }
+	{
+		return null_mut();
+	}
+	let style = if params.style == 0
+	{
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+	}
+	else
+	{
+		params.style
+	} | if params.flags & VEL_CREATE_VISIBLE != 0
+	{
+		WS_VISIBLE
+	}
+	else
+	{
+		0
+	};
+	let create_context = Box::new(CreateContext {
+		markdown: unsafe { wide_ptr_to_string(params.markdown) },
+		options: ControlOptions {
+			focus: params.flags & VEL_CREATE_GPUI_FOCUS != 0,
+			resizable: params.flags & VEL_CREATE_GPUI_RESIZABLE != 0,
+			theme_id: unsafe { wide_ptr_to_string_or_default(params.theme_id, "velotype-light") },
+			language_id: unsafe { wide_ptr_to_string_or_default(params.language_id, "en-US") },
+			editor_keybindings: BTreeMap::new(),
+			theme_params: BTreeMap::new(),
+			properties: BTreeMap::new(),
+			event_bridge: EmbeddedEventBridge::default(),
+			hide_caret: true,
+		},
+		initialize: params.flags & VEL_CREATE_INITIALIZE != 0,
+	});
+	unsafe {
+		with_class_name(|class_name_ptr| {
+			CreateWindowExW(
+				params.ex_style,
+				class_name_ptr,
+				null(),
+				style,
+				params.x,
+				params.y,
+				params.width.max(1),
+				params.height.max(1),
+				params.parent,
+				params.control_id as *mut c_void,
+				instance,
+				Box::into_raw(create_context) as *mut c_void,
+			)
+		})
+	}
 }
 
 #[unsafe(no_mangle)]
@@ -906,32 +977,38 @@ pub unsafe extern "system" fn Velotype_RenderMarkdownToHtml(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn Velotype_CreateStandaloneWindow() -> HWND {
-    let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
-    let instance = if instance.is_null() {
-        unsafe { module_instance() }
-    } else {
-        instance
-    };
-    if !unsafe { register_class(instance) } {
-        return null_mut();
-    }
-    let title = wide_null("Velotype.dll");
-    unsafe {
-        CreateWindowExW(
-            0,
-            CLASS_NAME.as_ptr(),
-            title.as_ptr(),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            760,
-            520,
-            null_mut(),
-            null_mut(),
-            instance,
-            null_mut(),
-        )
-    }
+	let instance = INSTANCE.load(Ordering::SeqCst) as HINSTANCE;
+	let instance = if instance.is_null()
+	{
+		unsafe { module_instance() }
+	}
+	else
+	{
+		instance
+	};
+	if !unsafe { register_class(instance) }
+	{
+		return null_mut();
+	}
+	let title = wide_null("Velotype.dll");
+	unsafe {
+		with_class_name(|class_name_ptr| {
+			CreateWindowExW(
+				0,
+				class_name_ptr,
+				title.as_ptr(),
+				WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+				CW_USEDEFAULT,
+				CW_USEDEFAULT,
+				760,
+				520,
+				null_mut(),
+				null_mut(),
+				instance,
+				null_mut(),
+			)
+		})
+	}
 }
 
 #[unsafe(no_mangle)]
@@ -1094,25 +1171,33 @@ unsafe extern "system" fn control_wnd_proc(
 }
 
 unsafe fn register_class(instance: HINSTANCE) -> bool {
-    let class = WNDCLASSEXW {
-        cbSize: size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
-        lpfnWndProc: Some(control_wnd_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: instance,
-        hIcon: null_mut(),
-        hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
-        hbrBackground: unsafe { CreateSolidBrush(0x00F0F0F0) } as *mut c_void,
-        lpszMenuName: null(),
-        lpszClassName: CLASS_NAME.as_ptr(),
-        hIconSm: null_mut(),
-    };
-    let atom = unsafe { RegisterClassExW(&class) };
-    if atom != 0 {
-        return true;
-    }
-    unsafe { GetLastError() == ERROR_CLASS_ALREADY_EXISTS }
+	let mut success = false;
+	with_class_name(|class_name_ptr| {
+		let class = WNDCLASSEXW {
+			cbSize: size_of::<WNDCLASSEXW>() as u32,
+			style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
+			lpfnWndProc: Some(control_wnd_proc),
+			cbClsExtra: 0,
+			cbWndExtra: 0,
+			hInstance: instance,
+			hIcon: null_mut(),
+			hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
+			hbrBackground: unsafe { CreateSolidBrush(0x00F0F0F0) } as *mut c_void,
+			lpszMenuName: null(),
+			lpszClassName: class_name_ptr,
+			hIconSm: null_mut(),
+		};
+		let atom = unsafe { RegisterClassExW(&class) };
+		if atom != 0
+		{
+			success = true;
+		}
+		else
+		{
+			success = unsafe { GetLastError() == ERROR_CLASS_ALREADY_EXISTS };
+		}
+	});
+	success
 }
 
 fn start_gpui_child(

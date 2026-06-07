@@ -115,7 +115,7 @@ impl WindowsPlatform {
         let result = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
-                PLATFORM_WINDOW_CLASS_NAME,
+                get_platform_window_class_name(),
                 None,
                 WINDOW_STYLE(0),
                 0,
@@ -1095,10 +1095,28 @@ fn handle_gpu_device_lost(
 
 const PLATFORM_WINDOW_CLASS_NAME: PCWSTR = w!("Zed::PlatformWindow");
 
+static CUSTOM_PLATFORM_WINDOW_CLASS_NAME: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+pub fn set_custom_platform_window_class_name(name: &str) {
+	let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+	let _ = CUSTOM_PLATFORM_WINDOW_CLASS_NAME.set(wide);
+}
+
+fn get_platform_window_class_name() -> PCWSTR {
+	if let Some(custom) = CUSTOM_PLATFORM_WINDOW_CLASS_NAME.get()
+	{
+		PCWSTR(custom.as_ptr())
+	}
+	else
+	{
+		PLATFORM_WINDOW_CLASS_NAME
+	}
+}
+
 fn register_platform_window_class() {
     let wc = WNDCLASSW {
         lpfnWndProc: Some(window_procedure),
-        lpszClassName: PCWSTR(PLATFORM_WINDOW_CLASS_NAME.as_ptr()),
+        lpszClassName: PCWSTR(get_platform_window_class_name().as_ptr()),
         ..Default::default()
     };
     unsafe { RegisterClassW(&wc) };

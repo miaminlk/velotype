@@ -38,3 +38,9 @@ pub(crate) use windows::Win32::Foundation::HWND;
 pub(crate) type PlatformScreenCaptureFrame = scap::frame::Frame;
 #[cfg(not(feature = "screen-capture"))]
 pub(crate) type PlatformScreenCaptureFrame = ();
+
+/// Set custom window class names on Windows to avoid name conflicts.
+pub fn set_window_class_names(window_class_name: &str, platform_window_class_name: &str) {
+	window::set_custom_window_class_name(window_class_name);
+	platform::set_custom_platform_window_class_name(platform_window_class_name);
+}

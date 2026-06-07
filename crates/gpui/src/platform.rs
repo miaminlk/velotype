@@ -22,6 +22,8 @@ mod test;
 
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+pub use windows::set_window_class_names;
 
 #[cfg(all(
     feature = "screen-capture",

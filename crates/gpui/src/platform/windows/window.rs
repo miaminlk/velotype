@@ -450,7 +450,7 @@ impl WindowsWindow {
         let creation_result = unsafe {
             CreateWindowExW(
                 dwexstyle,
-                WINDOW_CLASS_NAME,
+                get_window_class_name(),
                 &window_name,
                 dwstyle,
                 x,
@@ -1159,13 +1159,31 @@ enum WindowOpenState {
 
 const WINDOW_CLASS_NAME: PCWSTR = w!("Zed::Window");
 
+static CUSTOM_WINDOW_CLASS_NAME: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+pub fn set_custom_window_class_name(name: &str) {
+	let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+	let _ = CUSTOM_WINDOW_CLASS_NAME.set(wide);
+}
+
+fn get_window_class_name() -> PCWSTR {
+	if let Some(custom) = CUSTOM_WINDOW_CLASS_NAME.get()
+	{
+		PCWSTR(custom.as_ptr())
+	}
+	else
+	{
+		WINDOW_CLASS_NAME
+	}
+}
+
 fn register_window_class(icon_handle: HICON) {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let wc = WNDCLASSW {
             lpfnWndProc: Some(window_procedure),
             hIcon: icon_handle,
-            lpszClassName: PCWSTR(WINDOW_CLASS_NAME.as_ptr()),
+            lpszClassName: PCWSTR(get_window_class_name().as_ptr()),
             style: CS_HREDRAW | CS_VREDRAW,
             hInstance: get_module_handle().into(),
             hbrBackground: unsafe { CreateSolidBrush(COLORREF(0x00FFFFFF)) },

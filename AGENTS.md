@@ -11,6 +11,7 @@
 
 之上任务已经完成。项目内其他.md记录现状。
 
+使用 cargo check 检测代码。但如用户不指明运行实测，则避免编译(因为编译过程漫长)
 
 
 **Rules for writing new code (do not change existing code styles):**

@@ -277,6 +277,21 @@ BOOL WINAPI Velotype_SetTheme(HWND hwnd, const wchar_t *theme_id);
 
 DLL 默认使用 `velotype-light`。
 
+### `Velotype_SetClassName`
+
+```c
+BOOL WINAPI Velotype_SetClassName(const wchar_t *class_name);
+```
+
+设置/自定义控件注册的窗口类名。此函数应当在调用 `Velotype_RegisterClasses` 或 `Velotype_CreateControlEx` 之前调用。
+
+调用此函数后，不仅外层 Win32 控件的类名会被修改，内部 GPUI 引擎注册的窗口类（默认的 `Zed::Window` 与 `Zed::PlatformWindow`）也会被同步更新为 `<class_name>::Window` 与 `<class_name>::PlatformWindow`。这能彻底解决与宿主进程中其他 GPUI 应用（例如 ZED）的类名冲突。
+
+返回：
+
+- `TRUE`: 成功设置类名。
+- `FALSE`: 传入参数无效。
+
 ### `Velotype_SetLanguage`
 
 ```c
