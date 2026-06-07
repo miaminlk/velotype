@@ -222,6 +222,30 @@ editor.replace_markdown(markdown, cx)
 
 这会重新解析 Markdown、替换文档根节点、重建表格/图片 runtime，并触发 GPUI 刷新。
 
+## 图片渲染与路径解析修复
+
+在 DLL 模式和 Markdown/HTML 混合预览场景下，针对图片渲染不显示以及排版异常问题，进行了以下关键修复：
+
+1. **HTML 块中嵌入 Markdown 图片的解析渲染**
+   - **问题**：在原生 HTML 块（如 `<div>![alt](url)</div>`）内部的 Markdown 图片语法被解析为 `#text` 文本节点，原逻辑将其渲染为纯文本，导致图片直接显示源码而无法显示图像。
+   - **解决**：重构了 [`src/components/block/render.rs`](file:///d:/float/OneDrive/ONE/velotype/src/components/block/render.rs) 的 HTML 节点渲染流程，对 `#text` 类型节点引入了 `render_html_text_node` 逐行解析器。若检测到 Markdown 图片语法，则通过 `image_runtime_for_embedded_syntax` 提取并由 `render_image_content` 渲染为真正的图片元素。
+
+2. **自闭合 HTML `<img>` 标签 void 判定**
+   - **问题**：标准 HTML 中非闭合的 `<img>` 标签（例如 `<img src="path">` 且无 `/>` 结尾）会导致解析器无限等待闭合标签，从而使整个 HTML block 解析错乱，无法正确识别为图片。
+   - **解决**：在 [`src/editor/document.rs`](file:///d:/float/OneDrive/ONE/velotype/src/editor/document.rs) 解析 HTML 块的 `parse_html_block_start` 逻辑中，增加 `is_html_void_block_tag` 判定（包括 `"img"`、`"br"` 和 `"hr"`），将这些标签一律视为自闭合（`self_closing`）块级标签，从而能够被后续 `render_html_image` 正确处理并显示。
+
+3. **图片路径与描述转义还原**
+   - **问题**：若图片 alt 或路径中包含转义符号（如包含下划线 `\_` 的本地物理路径），路径解析会发生偏离，导致底层图片加载器找不到对应的物理文件。
+   - **解决**：在 [`src/components/markdown/image.rs`](file:///d:/float/OneDrive/ONE/velotype/src/components/markdown/image.rs) 的图片语法解析中，使用 `unescape_ascii_punctuation` 处理图片的 `alt` 和 `src`，还原为真实无转义的路径。
+
+4. **DLL 模式下相对路径的基准路径同步**
+   - **问题**：Velotype 被嵌入宿主程序运行后，程序的当前目录变更为宿主所在路径，这导致 Markdown 内的相对路径图片（如 `images/pic.png`）无法根据 Markdown 文档实际路径寻址而显示为红框。
+   - **解决**：在 [`src/editor/runtime_context.rs`](file:///d:/float/OneDrive/ONE/velotype/src/editor/runtime_context.rs) 中，基准路径 `image_base_dir()` 优先使用文件所在的绝对父目录。并在每次 Markdown 更新重新生成文档树时，调用 `rebuild_image_runtimes` 将基准路径动态同步给所有 block 节点的 `image_base_dir` 属性中，确保图片加载相对寻址正确。
+
+5. **图片上下巨大空白间隙排版修复（应用层修复）**
+   - **问题**：在没有给 img 设定绝对像素宽高（即为 `Auto`）时，GPUI 底层布局会将它们强行转换为图片的原始像素大小（如 `1450px * 357px`），当应用层加了 `.max_w()` 限制时，布局高度仍保持原值，导致图片按 `ObjectFit::Contain` 绘制时上下出现巨大留白。
+   - **解决**：摒弃了修改 GPUI 底层的方案，通过在 [`src/components/block/render.rs`](file:///d:/float/OneDrive/ONE/velotype/src/components/block/render.rs) 应用层计算当前容器的实际预算可用宽度（`resolved_width`），并将 `render_image_content` 里的限制由原来的 `.max_w(...)` 更改为明确设定物理像素宽度 `.w(resolved_width)`。这使得 GPUI 能够正确感知绝对宽度并在布局阶段成比例推算出正确的渲染高度，完美消除了间隙。为了获取正确的宽度，`render_image_content` 及其相关 HTML 渲染方法均引入了 `window: &Window` 参数。
+
 ## 测试脚本
 
 `scripts/test_velotype_dll.ahk` 使用 AHK v2：
