@@ -1194,26 +1194,11 @@ impl Editor {
 
     fn info_dialog_title<'a>(&self, strings: &'a I18nStrings, kind: InfoDialogKind) -> &'a str {
         match kind {
-            InfoDialogKind::CheckForUpdates => &strings.help_check_updates_title,
             InfoDialogKind::About => &strings.help_about_title,
         }
     }
 
-    pub(crate) fn about_dialog_body_lines(strings: &I18nStrings) -> Vec<String> {
-        vec![
-            format!("Velotype {}", env!("CARGO_PKG_VERSION")),
-            strings.help_about_message.clone(),
-            format!("{}: {}", strings.help_about_github_label, ABOUT_GITHUB_URL),
-            strings.help_about_star_message.clone(),
-        ]
-    }
 
-    fn info_dialog_body(&self, strings: &I18nStrings, kind: InfoDialogKind) -> String {
-        match kind {
-            InfoDialogKind::CheckForUpdates => strings.help_check_updates_message.clone(),
-            InfoDialogKind::About => Self::about_dialog_body_lines(strings).join("\n"),
-        }
-    }
 
     fn render_info_dialog_body(
         &self,
@@ -1232,18 +1217,6 @@ impl Editor {
         };
 
         match kind {
-            InfoDialogKind::CheckForUpdates => div()
-                .flex()
-                .flex_col()
-                .gap(px(d.dialog_gap * 0.5))
-                .child(
-                    body_style(div()).children(
-                        self.info_dialog_body(strings, kind)
-                            .lines()
-                            .map(|line| div().child(line.to_string())),
-                    ),
-                )
-                .into_any_element(),
             InfoDialogKind::About => div()
                 .flex()
                 .flex_col()

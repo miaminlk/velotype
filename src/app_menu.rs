@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use gpui::*;
 
 use crate::components::{
-    AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, InstallCliTool,
+    AddLanguageConfig, AddThemeConfig, ExportHtml, ExportPdf, InstallCliTool,
     NewWindow, NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication,
     SaveDocument, SaveDocumentAs, SelectLanguage, SelectTheme, ShowAbout, ToggleWorkspace,
     UninstallCliTool,
@@ -340,11 +340,7 @@ fn show_info_dialog_on_active_editor(cx: &mut App, kind: InfoDialogKind) {
     });
 }
 
-fn request_update_check_on_active_editor(cx: &mut App) {
-    let _ = with_active_editor(cx, |editor, window, cx| {
-        editor.request_check_updates(window, cx);
-    });
-}
+
 
 fn recent_files_for_menu() -> Vec<PathBuf> {
     match read_recent_files() {
@@ -401,7 +397,7 @@ fn is_editor_scoped_menu_action(action: &dyn Action) -> bool {
         || action.as_any().is::<ExportHtml>()
         || action.as_any().is::<ExportPdf>()
         || action.as_any().is::<QuitApplication>()
-        || action.as_any().is::<CheckForUpdates>()
+
         || action.as_any().is::<ShowAbout>()
         || action.as_any().is::<InstallCliTool>()
         || action.as_any().is::<UninstallCliTool>()
@@ -534,8 +530,7 @@ pub(crate) fn dispatch_menu_action(action: &dyn Action, cx: &mut App) {
                 show_window_prompt(cx.active_window(), &title, &err.to_string(), cx);
             }
         }
-    } else if action.as_any().is::<CheckForUpdates>() {
-        request_update_check_on_active_editor(cx);
+
     } else if action.as_any().is::<ShowAbout>() {
         show_info_dialog_on_active_editor(cx, InfoDialogKind::About);
     } else if action.as_any().is::<InstallCliTool>() {
@@ -599,10 +594,7 @@ pub(crate) fn dispatch_menu_action_for_editor(
         let _ = target.update(cx, |editor, cx| {
             editor.request_close_current_window(window, cx);
         });
-    } else if action.as_any().is::<CheckForUpdates>() {
-        let _ = target.update(cx, |editor, cx| {
-            editor.request_check_updates(window, cx);
-        });
+
     } else if action.as_any().is::<ShowAbout>() {
         let _ = target.update(cx, |editor, cx| {
             editor.show_info_dialog(InfoDialogKind::About, cx)
@@ -740,10 +732,7 @@ fn build_menus(
                 // installations (drag-installed .app bundles) need this —
                 // pkg-installed apps manage the symlink via postinstall.
                 let cli_installed = is_cli_symlink_current_app();
-                let mut items = vec![
-                    MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
-                    MenuItem::separator(),
-                ];
+                let mut items = Vec::new();
                 if cli_installed {
                     items.push(MenuItem::action(
                         SharedString::new(strings.menu_uninstall_cli_tool.as_str()),
@@ -761,8 +750,6 @@ fn build_menus(
             };
             #[cfg(not(target_os = "macos"))]
             let help_items = vec![
-                MenuItem::action(strings.menu_check_updates.clone(), CheckForUpdates),
-                MenuItem::separator(),
                 MenuItem::action(strings.menu_about.clone(), ShowAbout),
             ];
 
@@ -1004,9 +991,7 @@ pub(crate) fn init(cx: &mut App) {
     cx.on_action(|action: &SelectLanguage, cx| {
         dispatch_menu_action(action, cx);
     });
-    cx.on_action(|_: &CheckForUpdates, cx| {
-        dispatch_menu_action(&CheckForUpdates, cx);
-    });
+
     cx.on_action(|_: &ShowAbout, cx| {
         dispatch_menu_action(&ShowAbout, cx);
     });
@@ -1025,7 +1010,7 @@ pub(crate) fn init(cx: &mut App) {
 mod tests {
     use super::{applescript_string_literal, build_menus};
     use crate::components::{
-        AddLanguageConfig, AddThemeConfig, CheckForUpdates, ExportHtml, ExportPdf, NewWindow,
+        AddLanguageConfig, AddThemeConfig, ExportHtml, ExportPdf, NewWindow,
         NoRecentFiles, OpenFile, OpenPreferences, OpenRecentFile, QuitApplication, SaveDocument,
         SelectLanguage, SelectTheme, ShowAbout,
     };
@@ -1289,21 +1274,14 @@ mod tests {
     }
 
     #[test]
-    fn help_menu_contains_update_and_about_only() {
+    fn help_menu_contains_about_only() {
         let theme_manager = ThemeManager::default();
         let i18n_manager = I18nManager::default();
         let menus = build_menus(&theme_manager, &i18n_manager, &[]);
         let help_items = &menus[5].items;
 
-        assert_eq!(help_items.len(), 3);
+        assert_eq!(help_items.len(), 1);
         match &help_items[0] {
-            MenuItem::Action { action, .. } => {
-                assert!(action.as_any().is::<CheckForUpdates>());
-            }
-            _ => panic!("expected check updates action item"),
-        }
-        assert!(matches!(help_items[1], MenuItem::Separator));
-        match &help_items[2] {
             MenuItem::Action { action, .. } => {
                 assert!(action.as_any().is::<ShowAbout>());
             }

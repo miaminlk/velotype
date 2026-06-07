@@ -58,7 +58,6 @@ actions!(
         AddLanguageConfig,
         AddThemeConfig,
         QuitApplication,
-        CheckForUpdates,
         ShowAbout,
         InstallCliTool,
         UninstallCliTool,

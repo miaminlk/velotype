@@ -40,7 +40,6 @@ mod table_edit;
 #[cfg(test)]
 mod tests;
 mod tree;
-mod update;
 mod window_state;
 mod workspace;
 
@@ -151,8 +150,6 @@ pub struct Editor {
     drop_replace_restore_focus: Option<EntityId>,
     /// Optional informational dialog shown from the Help menu.
     info_dialog: Option<InfoDialogKind>,
-    /// True while an online update check is running in the background.
-    update_check_in_progress: bool,
     chrome_visible: bool,
     workspace: WorkspaceState,
     context_menu: Option<ContextMenuState>,
@@ -284,8 +281,6 @@ pub enum ViewMode {
 /// The informational dialogs that can be shown from the Help menu.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InfoDialogKind {
-    /// Dialog describing update-check availability.
-    CheckForUpdates,
     /// Dialog with app name and version information.
     About,
 }
@@ -335,7 +330,6 @@ impl Editor {
             pending_drop_replace_after_save: false,
             drop_replace_restore_focus: None,
             info_dialog: None,
-            update_check_in_progress: false,
             chrome_visible: true,
             workspace: WorkspaceState::default(),
             context_menu: None,
