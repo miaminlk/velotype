@@ -1550,9 +1550,16 @@ fn apply_theme_parameter(manager: &mut ThemeManager, name: &str, value: &str) {
             }
         }
         "font_size" | "text_size" => {
-            if let Ok(size) = value.parse::<f32>() {
-                theme.typography.text_size = size;
-            }
+			if let Ok(size) = value.parse::<f32>()
+			{
+				theme.typography.text_size = size;
+				theme.typography.h1_size = size * (32.0 / 17.0);
+				theme.typography.h2_size = size * (24.0 / 17.0);
+				theme.typography.h3_size = size * (20.0 / 17.0);
+				theme.typography.h4_size = size * (18.0 / 17.0);
+				theme.typography.h5_size = size * (16.0 / 17.0);
+				theme.typography.h6_size = size * (14.0 / 17.0);
+			}
         }
         "font_family" | "text_font_family" => {
             if !value.is_empty() {
@@ -1579,6 +1586,24 @@ fn apply_theme_parameter(manager: &mut ThemeManager, name: &str, value: &str) {
                 theme.typography.h3_size = size;
             }
         }
+		"h4_size" => {
+			if let Ok(size) = value.parse::<f32>()
+			{
+				theme.typography.h4_size = size;
+			}
+		}
+		"h5_size" => {
+			if let Ok(size) = value.parse::<f32>()
+			{
+				theme.typography.h5_size = size;
+			}
+		}
+		"h6_size" => {
+			if let Ok(size) = value.parse::<f32>()
+			{
+				theme.typography.h6_size = size;
+			}
+		}
         "code_size" => {
             if let Ok(size) = value.parse::<f32>() {
                 theme.typography.code_size = size;
@@ -1604,6 +1629,24 @@ fn apply_theme_parameter(manager: &mut ThemeManager, name: &str, value: &str) {
                 theme.dimensions.block_padding_y = padding;
             }
         }
+		"block_min_height" | "min_height" => {
+			if let Ok(height) = value.parse::<f32>()
+			{
+				theme.dimensions.block_min_height = height;
+			}
+		}
+		"h1_padding_bottom" | "heading_padding_bottom" => {
+			if let Ok(padding) = value.parse::<f32>()
+			{
+				theme.dimensions.h1_padding_bottom = padding;
+			}
+		}
+		"h1_margin_bottom" | "heading_margin_bottom" => {
+			if let Ok(margin) = value.parse::<f32>()
+			{
+				theme.dimensions.h1_margin_bottom = margin;
+			}
+		}
         "cursor_width" => {
             if let Ok(width) = value.parse::<f32>() {
                 theme.dimensions.cursor_width = width;

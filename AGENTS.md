@@ -18,9 +18,12 @@ This is a custom branch of Velotype (a multi-platform Markdown editor). The targ
 ## Practical Rules
 
 - **Avoid Compilation**: Use `cargo check` to verify code correctness. Avoid compiling the full binary/DLL unless explicitly requested by the user, as the compile process is slow.
+- **Git Commit**: Use Chinese for all git commit messages (Git 提交说明必须使用中文).
 - **Writing New Code** (do not change existing styles):
   1. **Naming**: Use Snake Case.
   2. **Indent**: Use tabs (`\t`).
   3. **Braces `{`**:
      * Definitions (functions, classes, structs): Keep on the **same line**.
-     * Control flow (`if`, `loop`, `match`): Move to a **new line**.
+     * Control flow (`if`, `loop`, `match`): Move to a **new line**.
+
+
