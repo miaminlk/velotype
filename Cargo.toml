@@ -1,13 +1,14 @@
 ﻿[package]
 name = "velotype"
-version = "0.5.19"
+version = "0.5.20"
 edition = "2024"
 license = "Apache-2.0"
+fileout='D:\float\OneDrive\diatom\conf\dll\control\velotype.dll'
 
 [lib]
 name = "velotype"
 path = "src/lib.rs"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [lints.clippy]
 # Allow stylistic patterns the project doesn't enforce. These mirror the

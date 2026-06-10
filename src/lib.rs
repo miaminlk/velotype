@@ -29,6 +29,7 @@ mod app_menu {
 
     pub(crate) fn install_menus(_cx: &mut App) {}
 }
+
 mod components;
 #[allow(dead_code, unused_imports)]
 mod config;
