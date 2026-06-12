@@ -1,5 +1,4 @@
 use std::{
-    mem::ManuallyDrop,
     sync::{Arc, OnceLock},
 };
 
@@ -39,8 +38,8 @@ pub(crate) struct FontInfo {
 pub(crate) struct DirectXRenderer {
     hwnd: HWND,
     atlas: Arc<DirectXAtlas>,
-    devices: ManuallyDrop<DirectXRendererDevices>,
-    resources: ManuallyDrop<DirectXResources>,
+    devices: DirectXRendererDevices,
+    resources: DirectXResources,
     globals: DirectXGlobalElements,
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
@@ -60,7 +59,7 @@ pub(crate) struct DirectXRendererDevices {
 struct DirectXResources {
     // Direct3D rendering objects
     swap_chain: IDXGISwapChain1,
-    render_target: ManuallyDrop<ID3D11Texture2D>,
+    render_target: Option<ID3D11Texture2D>,
     render_target_view: [Option<ID3D11RenderTargetView>; 1],
 
     // Path intermediate textures (with MSAA)
@@ -100,7 +99,7 @@ impl DirectXRendererDevices {
     pub(crate) fn new(
         directx_devices: &DirectXDevices,
         disable_direct_composition: bool,
-    ) -> Result<ManuallyDrop<Self>> {
+    ) -> Result<Self> {
         let DirectXDevices {
             adapter,
             dxgi_factory,
@@ -113,13 +112,13 @@ impl DirectXRendererDevices {
             Some(device.cast().context("Creating DXGI device")?)
         };
 
-        Ok(ManuallyDrop::new(Self {
+        Ok(Self {
             adapter: adapter.clone(),
             dxgi_factory: dxgi_factory.clone(),
             device: device.clone(),
             device_context: device_context.clone(),
             dxgi_device,
-        }))
+        })
     }
 }
 
@@ -174,7 +173,7 @@ impl DirectXRenderer {
     fn pre_draw(&self) -> Result<()> {
         update_buffer(
             &self.devices.device_context,
-            self.globals.global_params_buffer[0].as_ref().unwrap(),
+            self.globals.global_params_buffer[0].as_ref().context("global_params_buffer not found")?,
             &[GlobalParams {
                 gamma_ratios: self.font_info.gamma_ratios,
                 viewport_size: [
@@ -187,7 +186,7 @@ impl DirectXRenderer {
         )?;
         unsafe {
             self.devices.device_context.ClearRenderTargetView(
-                self.resources.render_target_view[0].as_ref().unwrap(),
+                self.resources.render_target_view[0].as_ref().context("render_target_view not found")?,
                 &[0.0; 4],
             );
             self.devices
@@ -225,6 +224,8 @@ impl DirectXRenderer {
 
     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
         let disable_direct_composition = self.direct_composition.is_none();
+        let width = self.resources.width;
+        let height = self.resources.height;
 
         unsafe {
             #[cfg(debug_assertions)]
@@ -232,26 +233,19 @@ impl DirectXRenderer {
                 .context("Failed to report live objects after device lost")
                 .log_err();
 
-            ManuallyDrop::drop(&mut self.resources);
             self.devices.device_context.OMSetRenderTargets(None, None);
             self.devices.device_context.ClearState();
             self.devices.device_context.Flush();
-
-            #[cfg(debug_assertions)]
-            report_live_objects(&self.devices.device)
-                .context("Failed to report live objects after device lost")
-                .log_err();
-
-            drop(self.direct_composition.take());
-            ManuallyDrop::drop(&mut self.devices);
         }
+
+        drop(self.direct_composition.take());
 
         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
             .context("Recreating DirectX devices")?;
         let resources = DirectXResources::new(
             &devices,
-            self.resources.width,
-            self.resources.height,
+            width,
+            height,
             self.hwnd,
             disable_direct_composition,
         )?;
@@ -326,8 +320,8 @@ impl DirectXRenderer {
 
         // Clear the render target before resizing
         unsafe { self.devices.device_context.OMSetRenderTargets(None, None) };
-        unsafe { ManuallyDrop::drop(&mut self.resources.render_target) };
-        drop(self.resources.render_target_view[0].take().unwrap());
+        self.resources.render_target = None;
+        drop(self.resources.render_target_view[0].take());
 
         // Resizing the swap chain requires a call to the underlying DXGI adapter, which can return the device removed error.
         // The app might have moved to a monitor that's attached to a different graphics device.
@@ -405,7 +399,7 @@ impl DirectXRenderer {
             self.devices.device_context.ClearRenderTargetView(
                 self.resources.path_intermediate_msaa_view[0]
                     .as_ref()
-                    .unwrap(),
+                    .context("path_intermediate_msaa_view not found")?,
                 &[0.0; 4],
             );
             // Set intermediate MSAA texture as render target
@@ -659,7 +653,7 @@ impl DirectXResources {
         height: u32,
         hwnd: HWND,
         disable_direct_composition: bool,
-    ) -> Result<ManuallyDrop<Self>> {
+    ) -> Result<Self> {
         let swap_chain = if disable_direct_composition {
             create_swap_chain(&devices.dxgi_factory, &devices.device, hwnd, width, height)?
         } else {
@@ -682,7 +676,7 @@ impl DirectXResources {
         ) = create_resources(devices, &swap_chain, width, height)?;
         set_rasterizer_state(&devices.device, &devices.device_context)?;
 
-        Ok(ManuallyDrop::new(Self {
+        Ok(Self {
             swap_chain,
             render_target,
             render_target_view,
@@ -693,7 +687,7 @@ impl DirectXResources {
             viewport,
             width,
             height,
-        }))
+        })
     }
 
     #[inline]
@@ -998,18 +992,6 @@ impl Drop for DirectXRenderer {
     fn drop(&mut self) {
         #[cfg(debug_assertions)]
         report_live_objects(&self.devices.device).ok();
-        unsafe {
-            ManuallyDrop::drop(&mut self.devices);
-            ManuallyDrop::drop(&mut self.resources);
-        }
-    }
-}
-
-impl Drop for DirectXResources {
-    fn drop(&mut self) {
-        unsafe {
-            ManuallyDrop::drop(&mut self.render_target);
-        }
     }
 }
 
@@ -1082,7 +1064,7 @@ fn create_resources(
     width: u32,
     height: u32,
 ) -> Result<(
-    ManuallyDrop<ID3D11Texture2D>,
+    Option<ID3D11Texture2D>,
     [Option<ID3D11RenderTargetView>; 1],
     ID3D11Texture2D,
     [Option<ID3D11ShaderResourceView>; 1],
@@ -1113,14 +1095,14 @@ fn create_render_target_and_its_view(
     swap_chain: &IDXGISwapChain1,
     device: &ID3D11Device,
 ) -> Result<(
-    ManuallyDrop<ID3D11Texture2D>,
+    Option<ID3D11Texture2D>,
     [Option<ID3D11RenderTargetView>; 1],
 )> {
     let render_target: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
     let mut render_target_view = None;
     unsafe { device.CreateRenderTargetView(&render_target, None, Some(&mut render_target_view))? };
     Ok((
-        ManuallyDrop::new(render_target),
+        Some(render_target),
         [Some(render_target_view.unwrap())],
     ))
 }
