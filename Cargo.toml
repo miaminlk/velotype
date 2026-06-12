@@ -1,6 +1,6 @@
 ﻿[package]
 name = "velotype"
-version = "0.5.20"
+version = "0.5.21"
 edition = "2024"
 license = "Apache-2.0"
 fileout='D:\float\OneDrive\diatom\conf\dll\control\velotype.dll'
