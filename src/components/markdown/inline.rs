@@ -2137,8 +2137,14 @@ fn locate_inline_link(
                 cursor += 1;
             };
 
-            let (destination, title) =
-                parse_link_target(&tokens_to_string(&tokens[url_start..url_end]))?;
+            let (destination, title) = if url_start == url_end
+			{
+				(String::new(), None)
+			}
+			else
+			{
+				parse_link_target(&tokens_to_string(&tokens[url_start..url_end]))?
+			};
             Some(LocatedInlineLink {
                 label_end,
                 end_index: url_end,

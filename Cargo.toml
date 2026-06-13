@@ -1,6 +1,6 @@
-[package]
+﻿[package]
 name = "velotype"
-version = "0.6.0"
+version = "0.6.2"
 edition = "2024"
 repository = "https://github.com/manyougz/velotype"
 license = "Apache-2.0"

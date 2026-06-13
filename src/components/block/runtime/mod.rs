@@ -1324,6 +1324,11 @@ impl Block {
                 self.collapsed_caret_affinity = CollapsedCaretAffinity::Default;
                 self.cursor_blink_epoch = Instant::now();
                 self.clear_vertical_motion();
+				self.projection_cache_key = Some((
+					true,
+					self.current_to_clean_range(start..end),
+					self.marked_range.as_ref().map(|range| self.current_to_clean_range(range.clone())),
+				));
                 if self.record.kind != old_kind || self.record.title != old_title {
                     cx.emit(BlockEvent::Changed);
                 }

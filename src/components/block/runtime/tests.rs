@@ -1650,6 +1650,54 @@ async fn typing_after_inline_link_preserves_link(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn typing_inside_newly_inserted_empty_link_preserves_link(cx: &mut TestAppContext) {
+	let block = cx.new(|cx| {
+		Block::with_record(
+			cx,
+			BlockRecord::new(
+				BlockKind::Paragraph,
+				InlineTextTree::from_markdown("abc [abc]"),
+			),
+		)
+	});
+
+	block.update(cx, |block, cx| {
+		let end = block.display_text().len();
+		block.selected_range = end..end;
+		block.sync_inline_projection_for_focus(true);
+		assert!(block.projection.is_none());
+
+		block.replace_text_in_visible_range(end..end, "()", None, false, cx);
+		block.sync_inline_projection_for_focus(true);
+	});
+
+	assert!(block.read_with(cx, |block, _| block.projection.is_some()));
+
+	block.update(cx, |block, cx| {
+		let target = block.projected_move_left_target(11);
+		assert_eq!(target, Some((10, super::CollapsedCaretAffinity::Default)));
+		block.assign_collapsed_selection_offset(10, super::CollapsedCaretAffinity::Default, None);
+		block.sync_inline_projection_for_focus(true);
+
+		block.replace_text_in_visible_range(10..10, "h", None, false, cx);
+		block.sync_inline_projection_for_focus(true);
+	});
+
+	assert_eq!(block.read_with(cx, |block, _| block.selected_range.clone()), 11..11);
+
+	block.update(cx, |block, cx| {
+		block.replace_text_in_visible_range(11..11, "t", None, false, cx);
+		block.sync_inline_projection_for_focus(true);
+	});
+
+	assert_eq!(
+		block.read_with(cx, |block, _| block.record.title.serialize_markdown()),
+		"abc [abc](ht)"
+	);
+	assert_eq!(block.read_with(cx, |block, _| block.selected_range.clone()), 12..12);
+}
+
+#[gpui::test]
 async fn deleting_adjacent_text_preserves_reference_style_link_syntax(cx: &mut TestAppContext) {
     let block = cx.new(|cx| {
         let mut block = Block::with_record(
