@@ -8,7 +8,9 @@ use std::time::Duration;
 use gpui::*;
 
 use super::CollapsedCaretAffinity;
-use super::{Block, BlockEvent, BlockKind, InlineFormat, InlineTextTree, UndoCaptureKind};
+use super::{
+    Block, BlockEvent, BlockKind, InlineFormat, InlineTextTree, PastedImageSource, UndoCaptureKind,
+};
 use crate::components::markdown::paste::should_split_plain_multiline_paste;
 use crate::components::{
     BlockDown, BlockUp, BoldSelection, CodeSelection, Copy, Cut, Delete, DeleteBack,
@@ -19,6 +21,70 @@ use crate::components::{
 };
 
 impl Block {
+    fn pasted_image_source_from_clipboard(item: &ClipboardItem) -> Option<PastedImageSource> {
+        item.entries().iter().find_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(PastedImageSource::ClipboardImage(image.clone())),
+            ClipboardEntry::String(_) => None,
+        })
+    }
+
+    fn pasted_image_source_from_text(text: &str) -> Option<PastedImageSource> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
+            return None;
+        }
+
+        Self::pasted_image_path_from_text_item(trimmed).map(PastedImageSource::LocalPath)
+    }
+
+    /// Parses a single clipboard text item as a local image path.
+    ///
+    /// Windows file-copy paste reaches GPUI as a plain drive-letter path; that
+    /// must be tested as a path before URL parsing, because `url::Url` treats
+    /// the drive letter as a URL scheme.
+    fn pasted_image_path_from_text_item(text: &str) -> Option<std::path::PathBuf> {
+        let unquoted = text
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or(text);
+        let direct_path = std::path::PathBuf::from(unquoted);
+        let path = if Self::is_supported_local_image_path(&direct_path) {
+            direct_path
+        } else if let Ok(url) = url::Url::parse(unquoted) {
+            if url.scheme() == "file" {
+                url.to_file_path().ok()?
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+        if !Self::is_supported_local_image_path(&path) {
+            return None;
+        }
+        Some(path)
+    }
+
+    fn is_supported_local_image_path(path: &std::path::Path) -> bool {
+        if !path.is_file() {
+            return false;
+        }
+        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+            return false;
+        };
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "tif" | "tiff"
+        )
+    }
+
+    fn paste_image_split(&self) -> (InlineTextTree, InlineTextTree) {
+        let clean_selected = self.selection_clean_range();
+        let (leading, tail) = self.record.title.split_at(clean_selected.start);
+        let (_, trailing) = tail.split_at(clean_selected.end.saturating_sub(clean_selected.start));
+        (leading, trailing)
+    }
+
     fn is_leaf_quote(&self) -> bool {
         self.kind() == BlockKind::Quote
             && self.children.is_empty()
@@ -202,6 +268,18 @@ impl Block {
         }
     }
 
+    /// If the code block's last line is a bare fence (three or more backticks
+    /// or tildes, no info string), returns the byte offset to cut from so the
+    /// whole line is removed; otherwise `None`.
+    fn trailing_code_fence_line_start(&self) -> Option<usize> {
+        let text = self.display_text();
+        let line_start = text.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        let is_bare_fence = BlockKind::parse_code_fence_opening(&text[line_start..])
+            .is_some_and(|fence| fence.language.is_none());
+        // Cut from the preceding newline too, unless the fence is the only line.
+        is_bare_fence.then(|| line_start.saturating_sub(1))
+    }
+
     pub(crate) fn on_newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
         // Enter is ordered from special editors to rich-text splitting:
         // table/source/code/quote-like blocks keep local newline semantics,
@@ -218,18 +296,6 @@ impl Block {
                 mark_inserted_text: false,
                 undo_kind: UndoCaptureKind::NonCoalescible,
             });
-            return;
-        }
-
-        if self.inline_math_source_editing() {
-            self.prepare_undo_capture(UndoCaptureKind::NonCoalescible, cx);
-            if let Some(trailing) = self.split_inline_math_source_edit_for_newline() {
-                self.mark_changed(cx);
-                cx.emit(BlockEvent::RequestNewline {
-                    trailing,
-                    source_already_mutated: true,
-                });
-            }
             return;
         }
 
@@ -254,12 +320,18 @@ impl Block {
             return;
         }
 
+        // `$$` then Enter opens a display-math block. Keying off the caret sitting
+        // right after a leading `$$` (rather than the line being exactly `$$`)
+        // means it also fires after pressing Home on an existing line and typing
+        // the fence in front of a formula: the rest of the line becomes the math
+        // body instead of being split off into a new paragraph.
         if self.kind() == BlockKind::Paragraph
             && self.selected_range.is_empty()
-            && self.cursor_offset() == self.visible_len()
-            && self.display_text() == "$$"
+            && self.cursor_offset() == "$$".len()
+            && self.display_text().starts_with("$$")
         {
-            self.enter_math_block(cx);
+            let body = self.display_text()["$$".len()..].to_string();
+            self.enter_math_block(&body, cx);
             return;
         }
 
@@ -305,6 +377,21 @@ impl Block {
         if self.kind().is_code_block() {
             if self.selected_range.is_empty() && self.is_empty() {
                 self.convert_to_paragraph(cx);
+                return;
+            }
+            // Typing a bare closing fence on the last line and pressing Enter
+            // leaves the block, matching source mode.
+            if self.selected_range.is_empty()
+                && self.cursor_offset() == self.visible_len()
+                && let Some(fence_start) = self.trailing_code_fence_line_start()
+            {
+                let fence_end = self.visible_len();
+                self.prepare_undo_capture(UndoCaptureKind::NonCoalescible, cx);
+                self.replace_text_in_visible_range(fence_start..fence_end, "", None, false, cx);
+                cx.emit(BlockEvent::RequestNewline {
+                    trailing: InlineTextTree::plain(String::new()),
+                    source_already_mutated: true,
+                });
                 return;
             }
             if !self.selected_range.is_empty() {
@@ -618,7 +705,14 @@ impl Block {
                 self.cursor_blink_epoch = std::time::Instant::now();
                 cx.notify();
             } else {
-                self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+                let previous = self.previous_boundary(self.cursor_offset());
+                // At the start of a table cell, step into the previous cell
+                // rather than stalling at the edge (same path as Shift+Tab).
+                if previous == self.cursor_offset() && self.is_table_cell() {
+                    cx.emit(BlockEvent::RequestTableCellMoveHorizontal { delta: -1 });
+                    return;
+                }
+                self.move_to(previous, cx);
             }
         } else {
             self.move_to(self.selected_range.start, cx);
@@ -639,7 +733,14 @@ impl Block {
                 self.cursor_blink_epoch = std::time::Instant::now();
                 cx.notify();
             } else {
-                self.move_to(self.next_boundary(self.selected_range.end), cx);
+                let next = self.next_boundary(self.selected_range.end);
+                // At the end of a table cell, step into the next cell rather
+                // than stalling at the edge (same path as Tab).
+                if next == self.selected_range.end && self.is_table_cell() {
+                    cx.emit(BlockEvent::RequestTableCellMoveHorizontal { delta: 1 });
+                    return;
+                }
+                self.move_to(next, cx);
             }
         } else {
             self.move_to(self.selected_range.end, cx);
@@ -734,14 +835,22 @@ impl Block {
         cx.emit(BlockEvent::RequestBlockDown);
     }
 
+    fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        self.move_to(0, cx);
+        self.select_to(self.visible_len(), cx);
+    }
+
     pub(crate) fn on_select_all(
         &mut self,
         _: &SelectAll,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_to(0, cx);
-        self.select_to(self.visible_len(), cx);
+        if self.show_source_line_numbers() {
+            self.select_all_text(cx);
+        } else {
+            cx.emit(BlockEvent::RequestRenderedSelectAll);
+        }
     }
 
     pub(crate) fn on_select_home(
@@ -785,7 +894,30 @@ impl Block {
             return;
         }
 
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        if let Some(item) = cx.read_from_clipboard() {
+            if let Some(source) = Self::pasted_image_source_from_clipboard(&item) {
+                let (leading, trailing) = self.paste_image_split();
+                cx.emit(BlockEvent::RequestPasteImage {
+                    leading,
+                    source,
+                    trailing,
+                });
+                return;
+            }
+
+            let Some(text) = item.text() else {
+                return;
+            };
+            if let Some(source) = Self::pasted_image_source_from_text(&text) {
+                let (leading, trailing) = self.paste_image_split();
+                cx.emit(BlockEvent::RequestPasteImage {
+                    leading,
+                    source,
+                    trailing,
+                });
+                return;
+            }
+
             // Only rendered rich-text blocks apply paste correction. Raw/code
             // contexts preserve bytes, and table cells flatten newlines so the
             // surrounding table structure is not accidentally split.
@@ -1226,6 +1358,14 @@ impl Block {
         let offset = self.index_for_mouse_position(event.position);
         let was_focused = self.focus_handle.is_focused(window);
 
+        // Cmd/Ctrl+click follows a rendered link instead of editing it, so the
+        // block is neither focused nor selected; the link opens on mouse-up.
+        if event.modifiers.secondary() && self.pointer_link_hit(event.position).is_some() {
+            self.is_selecting = false;
+            cx.stop_propagation();
+            return;
+        }
+
         if was_focused {
             self.is_selecting = true;
             if event.modifiers.shift {
@@ -1240,6 +1380,54 @@ impl Block {
         }
     }
 
+    /// Resolve the inline link under a pointer position against the most recent
+    /// rendered text layout, if any. Returns `None` while the block shows raw
+    /// source or when the pointer is not over a link.
+    pub(crate) fn pointer_link_hit(&self, position: Point<Pixels>) -> Option<super::InlineLinkHit> {
+        self.last_layout
+            .as_ref()
+            .zip(self.last_bounds)
+            .and_then(|(lines, bounds)| {
+                super::element::link_at_position(
+                    self,
+                    lines,
+                    bounds,
+                    self.last_line_height,
+                    position,
+                )
+            })
+            .cloned()
+    }
+
+    /// Handle mouse-down on a rendered inline link (in a mixed inline-visual
+    /// block). A Cmd/Ctrl+click is claimed here so it follows the link instead
+    /// of focusing the block; the destination opens on the matching mouse-up.
+    pub(crate) fn on_rendered_link_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Only Cmd/Ctrl+click follows the link; a plain click falls through so
+        // the block focuses for editing like any other inline text.
+        if event.modifiers.secondary() {
+            cx.stop_propagation();
+        }
+    }
+
+    /// Open a rendered inline link's destination through the editor prompt.
+    pub(crate) fn open_rendered_link(
+        &mut self,
+        link: &super::InlineLinkHit,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        cx.emit(BlockEvent::RequestOpenLink {
+            prompt_target: link.prompt_target.clone(),
+            open_target: link.open_target.clone(),
+        });
+    }
+
     pub(crate) fn on_mouse_up(
         &mut self,
         event: &MouseUpEvent,
@@ -1247,6 +1435,16 @@ impl Block {
         cx: &mut Context<Self>,
     ) {
         self.is_selecting = false;
+
+        // Cmd/Ctrl+click follows a rendered link, using the same open-link
+        // prompt as the double-click gesture below.
+        if event.modifiers.secondary()
+            && let Some(link) = self.pointer_link_hit(event.position)
+        {
+            self.open_rendered_link(&link, cx);
+            return;
+        }
+
         if event.click_count >= 2 {
             let footnote = self
                 .last_layout
@@ -1268,26 +1466,8 @@ impl Block {
                 return;
             }
 
-            let link = self
-                .last_layout
-                .as_ref()
-                .zip(self.last_bounds)
-                .and_then(|(lines, bounds)| {
-                    super::element::link_at_position(
-                        self,
-                        lines,
-                        bounds,
-                        self.last_line_height,
-                        event.position,
-                    )
-                })
-                .cloned();
-            if let Some(link) = link {
-                cx.stop_propagation();
-                cx.emit(BlockEvent::RequestOpenLink {
-                    prompt_target: link.prompt_target,
-                    open_target: link.open_target,
-                });
+            if let Some(link) = self.pointer_link_hit(event.position) {
+                self.open_rendered_link(&link, cx);
             }
         }
     }
@@ -1506,8 +1686,28 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::Block;
-    use crate::components::{BlockKind, BlockRecord, InlineTextTree};
+    use crate::components::{BlockKind, BlockRecord, InlineTextTree, PastedImageSource};
     use gpui::{AppContext, TestAppContext};
+    use std::fs;
+
+    fn temp_image_path(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "velotype-paste-image-path-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).expect("temp image dir should exist");
+        let path = root.join(name);
+        fs::write(
+            &path,
+            b"not a real image; extension is enough for paste routing",
+        )
+        .expect("temp image should be written");
+        path
+    }
+
+    fn remove_temp_image(path: &std::path::Path) {
+        let _ = path.parent().map(|parent| fs::remove_dir_all(parent));
+    }
 
     #[gpui::test]
     async fn append_column_button_stays_visible_while_crossing_hover_gap(cx: &mut TestAppContext) {
@@ -1524,6 +1724,55 @@ mod tests {
             assert!(block.table_append_column_button_hovered);
             assert!(block.table_append_column_close_task.is_none());
         });
+    }
+
+    #[test]
+    fn paste_image_text_accepts_plain_local_image_path() {
+        let path = temp_image_path("copied.png");
+        let text = path.to_string_lossy().to_string();
+        #[cfg(target_os = "windows")]
+        assert!(
+            text.contains(':'),
+            "test should exercise Windows drive-letter paths"
+        );
+
+        let source = Block::pasted_image_source_from_text(&text);
+
+        assert_eq!(source, Some(PastedImageSource::LocalPath(path.clone())));
+        remove_temp_image(&path);
+    }
+
+    #[test]
+    fn paste_image_text_accepts_quoted_local_image_path() {
+        let path = temp_image_path("quoted image.png");
+        let text = format!("\"{}\"", path.display());
+
+        let source = Block::pasted_image_source_from_text(&text);
+
+        assert_eq!(source, Some(PastedImageSource::LocalPath(path.clone())));
+        remove_temp_image(&path);
+    }
+
+    #[test]
+    fn paste_image_text_accepts_file_url() {
+        let path = temp_image_path("url image.png");
+        let url = url::Url::from_file_path(&path).expect("temp image path should form file URL");
+
+        let source = Block::pasted_image_source_from_text(url.as_str());
+
+        assert_eq!(source, Some(PastedImageSource::LocalPath(path.clone())));
+        remove_temp_image(&path);
+    }
+
+    #[test]
+    fn paste_image_text_rejects_non_image_path() {
+        let path = temp_image_path("notes.txt");
+        let text = path.to_string_lossy().to_string();
+
+        let source = Block::pasted_image_source_from_text(&text);
+
+        assert_eq!(source, None);
+        remove_temp_image(&path);
     }
 
     #[gpui::test]

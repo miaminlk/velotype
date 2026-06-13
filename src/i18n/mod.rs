@@ -91,6 +91,8 @@ pub struct I18nStrings {
     pub menu_add_theme_config: String,
     /// File menu item for opening a new window.
     pub menu_new_window: String,
+    /// File menu item for closing the current window.
+    pub menu_close_window: String,
     /// File menu item for opening Markdown files.
     pub menu_open_file: String,
     /// File menu item for opening a recent file submenu.
@@ -135,6 +137,8 @@ pub struct I18nStrings {
     pub save_failed_title: String,
     /// Title of the export failure prompt.
     pub export_failed_title: String,
+    /// Title of the image-paste failure prompt.
+    pub image_paste_failed_title: String,
     /// Title of the custom configuration import failure prompt.
     pub config_import_failed_title: String,
     /// Preferences window title.
@@ -143,6 +147,8 @@ pub struct I18nStrings {
     pub preferences_nav_file: String,
     /// Theme preferences navigation label.
     pub preferences_nav_theme: String,
+    /// Image preferences navigation label.
+    pub preferences_nav_image: String,
     /// Shortcut preferences navigation label.
     pub preferences_nav_shortcuts: String,
     /// Startup option field label.
@@ -153,6 +159,12 @@ pub struct I18nStrings {
     pub preferences_startup_last_opened_file: String,
     /// Theme preference field label.
     pub preferences_local_theme: String,
+    /// Image paste behavior field label.
+    pub preferences_image_insert_behavior: String,
+    pub preferences_image_paste_none: String,
+    pub preferences_image_paste_copy_to_document_folder: String,
+    pub preferences_image_paste_copy_to_assets_folder: String,
+    pub preferences_image_paste_copy_to_named_assets_folder: String,
     /// Save button label in the preferences window.
     pub preferences_save: String,
     /// Cancel button label in the preferences window.
@@ -185,6 +197,10 @@ pub struct I18nStrings {
     pub preferences_shortcut_end: String,
     pub preferences_shortcut_block_up: String,
     pub preferences_shortcut_block_down: String,
+    pub preferences_shortcut_page_up: String,
+    pub preferences_shortcut_page_down: String,
+    pub preferences_shortcut_jump_to_top: String,
+    pub preferences_shortcut_jump_to_bottom: String,
     pub preferences_shortcut_select_left: String,
     pub preferences_shortcut_select_right: String,
     pub preferences_shortcut_word_select_left: String,
@@ -208,6 +224,7 @@ pub struct I18nStrings {
     pub preferences_shortcut_new_window: String,
     pub preferences_shortcut_open_file: String,
     pub preferences_shortcut_quit_application: String,
+    pub preferences_shortcut_close_window: String,
     pub preferences_shortcut_dismiss_transient_ui: String,
     pub preferences_shortcut_toggle_view_mode: String,
     pub preferences_shortcut_toggle_workspace: String,
@@ -261,6 +278,8 @@ pub struct I18nStrings {
     pub table_axis_move_row_down: String,
     /// Table-axis menu item for deleting a row.
     pub table_axis_delete_row: String,
+    /// Table header-row menu item that toggles header styling on the top row.
+    pub table_header_row: String,
     /// Title of the table-insert dialog.
     pub table_insert_title: String,
     /// Body text of the table-insert dialog.
@@ -322,6 +341,7 @@ struct I18nStringsDe {
     menu_add_language_config: Option<String>,
     menu_add_theme_config: Option<String>,
     menu_new_window: Option<String>,
+    menu_close_window: Option<String>,
     menu_open_file: Option<String>,
     menu_open_recent_file: Option<String>,
     menu_preferences: Option<String>,
@@ -344,15 +364,22 @@ struct I18nStringsDe {
     recent_file_missing_message_template: Option<String>,
     save_failed_title: Option<String>,
     export_failed_title: Option<String>,
+    image_paste_failed_title: Option<String>,
     config_import_failed_title: Option<String>,
     preferences_window_title: Option<String>,
     preferences_nav_file: Option<String>,
     preferences_nav_theme: Option<String>,
+    preferences_nav_image: Option<String>,
     preferences_nav_shortcuts: Option<String>,
     preferences_startup_option: Option<String>,
     preferences_startup_new_file: Option<String>,
     preferences_startup_last_opened_file: Option<String>,
     preferences_local_theme: Option<String>,
+    preferences_image_insert_behavior: Option<String>,
+    preferences_image_paste_none: Option<String>,
+    preferences_image_paste_copy_to_document_folder: Option<String>,
+    preferences_image_paste_copy_to_assets_folder: Option<String>,
+    preferences_image_paste_copy_to_named_assets_folder: Option<String>,
     preferences_save: Option<String>,
     preferences_cancel: Option<String>,
     preferences_save_failed_title: Option<String>,
@@ -382,6 +409,10 @@ struct I18nStringsDe {
     preferences_shortcut_end: Option<String>,
     preferences_shortcut_block_up: Option<String>,
     preferences_shortcut_block_down: Option<String>,
+    preferences_shortcut_page_up: Option<String>,
+    preferences_shortcut_page_down: Option<String>,
+    preferences_shortcut_jump_to_top: Option<String>,
+    preferences_shortcut_jump_to_bottom: Option<String>,
     preferences_shortcut_select_left: Option<String>,
     preferences_shortcut_select_right: Option<String>,
     preferences_shortcut_word_select_left: Option<String>,
@@ -405,6 +436,7 @@ struct I18nStringsDe {
     preferences_shortcut_new_window: Option<String>,
     preferences_shortcut_open_file: Option<String>,
     preferences_shortcut_quit_application: Option<String>,
+    preferences_shortcut_close_window: Option<String>,
     preferences_shortcut_dismiss_transient_ui: Option<String>,
     preferences_shortcut_toggle_view_mode: Option<String>,
     preferences_shortcut_toggle_workspace: Option<String>,
@@ -433,6 +465,7 @@ struct I18nStringsDe {
     table_axis_move_row_up: Option<String>,
     table_axis_move_row_down: Option<String>,
     table_axis_delete_row: Option<String>,
+    table_header_row: Option<String>,
     table_insert_title: Option<String>,
     table_insert_description: Option<String>,
     table_insert_body_rows: Option<String>,
@@ -482,6 +515,7 @@ const I18N_STRING_KEYS: &[&str] = &[
     "menu_add_language_config",
     "menu_add_theme_config",
     "menu_new_window",
+    "menu_close_window",
     "menu_open_file",
     "menu_open_recent_file",
     "menu_preferences",
@@ -504,15 +538,22 @@ const I18N_STRING_KEYS: &[&str] = &[
     "recent_file_missing_message_template",
     "save_failed_title",
     "export_failed_title",
+    "image_paste_failed_title",
     "config_import_failed_title",
     "preferences_window_title",
     "preferences_nav_file",
     "preferences_nav_theme",
+    "preferences_nav_image",
     "preferences_nav_shortcuts",
     "preferences_startup_option",
     "preferences_startup_new_file",
     "preferences_startup_last_opened_file",
     "preferences_local_theme",
+    "preferences_image_insert_behavior",
+    "preferences_image_paste_none",
+    "preferences_image_paste_copy_to_document_folder",
+    "preferences_image_paste_copy_to_assets_folder",
+    "preferences_image_paste_copy_to_named_assets_folder",
     "preferences_save",
     "preferences_cancel",
     "preferences_save_failed_title",
@@ -542,6 +583,10 @@ const I18N_STRING_KEYS: &[&str] = &[
     "preferences_shortcut_end",
     "preferences_shortcut_block_up",
     "preferences_shortcut_block_down",
+    "preferences_shortcut_page_up",
+    "preferences_shortcut_page_down",
+    "preferences_shortcut_jump_to_top",
+    "preferences_shortcut_jump_to_bottom",
     "preferences_shortcut_select_left",
     "preferences_shortcut_select_right",
     "preferences_shortcut_word_select_left",
@@ -565,6 +610,7 @@ const I18N_STRING_KEYS: &[&str] = &[
     "preferences_shortcut_new_window",
     "preferences_shortcut_open_file",
     "preferences_shortcut_quit_application",
+    "preferences_shortcut_close_window",
     "preferences_shortcut_dismiss_transient_ui",
     "preferences_shortcut_toggle_view_mode",
     "preferences_shortcut_toggle_workspace",
@@ -593,6 +639,7 @@ const I18N_STRING_KEYS: &[&str] = &[
     "table_axis_move_row_up",
     "table_axis_move_row_down",
     "table_axis_delete_row",
+    "table_header_row",
     "table_insert_title",
     "table_insert_description",
     "table_insert_body_rows",
@@ -696,6 +743,7 @@ impl I18nStringsDe {
                 .menu_add_theme_config
                 .unwrap_or(defaults.menu_add_theme_config),
             menu_new_window: self.menu_new_window.unwrap_or(defaults.menu_new_window),
+            menu_close_window: self.menu_close_window.unwrap_or(defaults.menu_close_window),
             menu_open_file: self.menu_open_file.unwrap_or(defaults.menu_open_file),
             menu_open_recent_file: self
                 .menu_open_recent_file
@@ -742,6 +790,9 @@ impl I18nStringsDe {
             export_failed_title: self
                 .export_failed_title
                 .unwrap_or(defaults.export_failed_title),
+            image_paste_failed_title: self
+                .image_paste_failed_title
+                .unwrap_or(defaults.image_paste_failed_title),
             config_import_failed_title: self
                 .config_import_failed_title
                 .unwrap_or(defaults.config_import_failed_title),
@@ -754,6 +805,9 @@ impl I18nStringsDe {
             preferences_nav_theme: self
                 .preferences_nav_theme
                 .unwrap_or(defaults.preferences_nav_theme),
+            preferences_nav_image: self
+                .preferences_nav_image
+                .unwrap_or(defaults.preferences_nav_image),
             preferences_nav_shortcuts: self
                 .preferences_nav_shortcuts
                 .unwrap_or(defaults.preferences_nav_shortcuts),
@@ -769,6 +823,21 @@ impl I18nStringsDe {
             preferences_local_theme: self
                 .preferences_local_theme
                 .unwrap_or(defaults.preferences_local_theme),
+            preferences_image_insert_behavior: self
+                .preferences_image_insert_behavior
+                .unwrap_or(defaults.preferences_image_insert_behavior),
+            preferences_image_paste_none: self
+                .preferences_image_paste_none
+                .unwrap_or(defaults.preferences_image_paste_none),
+            preferences_image_paste_copy_to_document_folder: self
+                .preferences_image_paste_copy_to_document_folder
+                .unwrap_or(defaults.preferences_image_paste_copy_to_document_folder),
+            preferences_image_paste_copy_to_assets_folder: self
+                .preferences_image_paste_copy_to_assets_folder
+                .unwrap_or(defaults.preferences_image_paste_copy_to_assets_folder),
+            preferences_image_paste_copy_to_named_assets_folder: self
+                .preferences_image_paste_copy_to_named_assets_folder
+                .unwrap_or(defaults.preferences_image_paste_copy_to_named_assets_folder),
             preferences_save: self.preferences_save.unwrap_or(defaults.preferences_save),
             preferences_cancel: self
                 .preferences_cancel
@@ -854,6 +923,18 @@ impl I18nStringsDe {
             preferences_shortcut_block_down: self
                 .preferences_shortcut_block_down
                 .unwrap_or(defaults.preferences_shortcut_block_down),
+            preferences_shortcut_page_up: self
+                .preferences_shortcut_page_up
+                .unwrap_or(defaults.preferences_shortcut_page_up),
+            preferences_shortcut_page_down: self
+                .preferences_shortcut_page_down
+                .unwrap_or(defaults.preferences_shortcut_page_down),
+            preferences_shortcut_jump_to_top: self
+                .preferences_shortcut_jump_to_top
+                .unwrap_or(defaults.preferences_shortcut_jump_to_top),
+            preferences_shortcut_jump_to_bottom: self
+                .preferences_shortcut_jump_to_bottom
+                .unwrap_or(defaults.preferences_shortcut_jump_to_bottom),
             preferences_shortcut_select_left: self
                 .preferences_shortcut_select_left
                 .unwrap_or(defaults.preferences_shortcut_select_left),
@@ -923,6 +1004,9 @@ impl I18nStringsDe {
             preferences_shortcut_quit_application: self
                 .preferences_shortcut_quit_application
                 .unwrap_or(defaults.preferences_shortcut_quit_application),
+            preferences_shortcut_close_window: self
+                .preferences_shortcut_close_window
+                .unwrap_or(defaults.preferences_shortcut_close_window),
             preferences_shortcut_dismiss_transient_ui: self
                 .preferences_shortcut_dismiss_transient_ui
                 .unwrap_or(defaults.preferences_shortcut_dismiss_transient_ui),
@@ -999,6 +1083,7 @@ impl I18nStringsDe {
             table_axis_delete_row: self
                 .table_axis_delete_row
                 .unwrap_or(defaults.table_axis_delete_row),
+            table_header_row: self.table_header_row.unwrap_or(defaults.table_header_row),
             table_insert_title: self
                 .table_insert_title
                 .unwrap_or(defaults.table_insert_title),
@@ -1044,7 +1129,7 @@ impl<'de> Deserialize<'de> for I18nStrings {
 impl I18nStrings {
     /// Built-in Simplified Chinese UI strings.
     pub fn zh_cn() -> Self {
-        Self {
+        let mut strings = Self {
             dirty_title_marker: "\u{00B7}".into(),
             unsaved_changes_title: "不保存并关闭？".into(),
             unsaved_changes_message: "此文档有未保存的更改。关闭前保存可避免丢失最新编辑。".into(),
@@ -1084,6 +1169,7 @@ impl I18nStrings {
             menu_add_language_config: "添加语言配置".into(),
             menu_add_theme_config: "添加主题配置".into(),
             menu_new_window: "新建窗口".into(),
+            menu_close_window: "关闭窗口".into(),
             menu_open_file: "打开文件".into(),
             menu_open_recent_file: "打开最近文件".into(),
             menu_preferences: "偏好设置".into(),
@@ -1145,6 +1231,10 @@ impl I18nStrings {
             preferences_shortcut_end: "行尾".into(),
             preferences_shortcut_block_up: "上一块开头".into(),
             preferences_shortcut_block_down: "下一块开头".into(),
+            preferences_shortcut_page_up: "上翻一页".into(),
+            preferences_shortcut_page_down: "下翻一页".into(),
+            preferences_shortcut_jump_to_top: "跳至开头".into(),
+            preferences_shortcut_jump_to_bottom: "跳至末尾".into(),
             preferences_shortcut_select_left: "向左选择".into(),
             preferences_shortcut_select_right: "向右选择".into(),
             preferences_shortcut_word_select_left: "向左选择单词".into(),
@@ -1168,6 +1258,7 @@ impl I18nStrings {
             preferences_shortcut_new_window: "新建窗口".into(),
             preferences_shortcut_open_file: "打开文件".into(),
             preferences_shortcut_quit_application: "退出应用".into(),
+            preferences_shortcut_close_window: "关闭窗口".into(),
             preferences_shortcut_dismiss_transient_ui: "关闭临时界面".into(),
             preferences_shortcut_toggle_view_mode: "切换视图模式".into(),
             preferences_shortcut_toggle_workspace: "切换工作区".into(),
@@ -1197,6 +1288,7 @@ impl I18nStrings {
             table_axis_move_row_up: "向上移动此行".into(),
             table_axis_move_row_down: "向下移动此行".into(),
             table_axis_delete_row: "删除此行".into(),
+            table_header_row: "标题行".into(),
             table_insert_title: "插入表格".into(),
             table_insert_description: "创建 1 个表头行，并配置正文行数与列数。".into(),
             table_insert_body_rows: "正文行数".into(),
@@ -1207,7 +1299,17 @@ impl I18nStrings {
             image_loading_without_alt: "正在加载图片...".into(),
             image_loading_with_alt_template: "正在加载 {alt}".into(),
             code_language_placeholder: "语言".into(),
-        }
+            ..Self::en_us()
+        };
+        strings.image_paste_failed_title = "图片粘贴失败".into();
+        strings.preferences_nav_image = "图像".into();
+        strings.preferences_image_insert_behavior = "插入图片时...".into();
+        strings.preferences_image_paste_none = "无特殊操作".into();
+        strings.preferences_image_paste_copy_to_document_folder = "复制图片到 ./ 文件夹".into();
+        strings.preferences_image_paste_copy_to_assets_folder = "复制图片到 ./assets 文件夹".into();
+        strings.preferences_image_paste_copy_to_named_assets_folder =
+            "复制图片到 ./${filename}.assets 文件夹".into();
+        strings
     }
 
     /// Built-in English UI strings.
@@ -1259,6 +1361,7 @@ impl I18nStrings {
             menu_add_language_config: "Add Language Config".into(),
             menu_add_theme_config: "Add Theme Config".into(),
             menu_new_window: "New Window".into(),
+            menu_close_window: "Close Window".into(),
             menu_open_file: "Open File".into(),
             menu_open_recent_file: "Open Recent File".into(),
             menu_preferences: "Preferences".into(),
@@ -1282,15 +1385,25 @@ impl I18nStrings {
                 "This recent file no longer exists and has been removed:\n{path}".into(),
             save_failed_title: "Save Failed".into(),
             export_failed_title: "Export Failed".into(),
+            image_paste_failed_title: "Image Paste Failed".into(),
             config_import_failed_title: "Config Import Failed".into(),
             preferences_window_title: "Preferences".into(),
             preferences_nav_file: "File".into(),
             preferences_nav_theme: "Theme".into(),
+            preferences_nav_image: "Image".into(),
             preferences_nav_shortcuts: "Shortcuts".into(),
             preferences_startup_option: "Startup Option".into(),
             preferences_startup_new_file: "New Markdown File".into(),
             preferences_startup_last_opened_file: "Last Opened Markdown File".into(),
             preferences_local_theme: "Local Theme".into(),
+            preferences_image_insert_behavior: "When inserting images...".into(),
+            preferences_image_paste_none: "No special action".into(),
+            preferences_image_paste_copy_to_document_folder:
+                "Copy image to ./ folder".into(),
+            preferences_image_paste_copy_to_assets_folder:
+                "Copy image to ./assets folder".into(),
+            preferences_image_paste_copy_to_named_assets_folder:
+                "Copy image to ./${filename}.assets folder".into(),
             preferences_save: "Save".into(),
             preferences_cancel: "Cancel".into(),
             preferences_save_failed_title: "Save Preferences Failed".into(),
@@ -1321,6 +1434,10 @@ impl I18nStrings {
             preferences_shortcut_end: "Line End".into(),
             preferences_shortcut_block_up: "Block Up".into(),
             preferences_shortcut_block_down: "Block Down".into(),
+            preferences_shortcut_page_up: "Page Up".into(),
+            preferences_shortcut_page_down: "Page Down".into(),
+            preferences_shortcut_jump_to_top: "Jump to Top".into(),
+            preferences_shortcut_jump_to_bottom: "Jump to Bottom".into(),
             preferences_shortcut_select_left: "Select Left".into(),
             preferences_shortcut_select_right: "Select Right".into(),
             preferences_shortcut_word_select_left: "Word Select Left".into(),
@@ -1344,6 +1461,7 @@ impl I18nStrings {
             preferences_shortcut_new_window: "New Window".into(),
             preferences_shortcut_open_file: "Open File".into(),
             preferences_shortcut_quit_application: "Quit Application".into(),
+            preferences_shortcut_close_window: "Close Window".into(),
             preferences_shortcut_dismiss_transient_ui: "Dismiss Temporary UI".into(),
             preferences_shortcut_toggle_view_mode: "Toggle View Mode".into(),
             preferences_shortcut_toggle_workspace: "Toggle Workspace".into(),
@@ -1373,6 +1491,7 @@ impl I18nStrings {
             table_axis_move_row_up: "Move Row Up".into(),
             table_axis_move_row_down: "Move Row Down".into(),
             table_axis_delete_row: "Delete Row".into(),
+            table_header_row: "Header Row".into(),
             table_insert_title: "Insert Table".into(),
             table_insert_description:
                 "Create one header row and configure body rows and columns.".into(),

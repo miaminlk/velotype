@@ -25,6 +25,10 @@ mod app_menu {
 
     pub(crate) fn uninstall_cli_tool(_cx: &mut App) {}
 
+    pub(crate) fn request_quit_application(cx: &mut App) {
+        cx.quit();
+    }
+
     pub(crate) fn record_recent_file_from_editor(_path: &Path, _cx: &mut App) {}
 
     pub(crate) fn install_menus(_cx: &mut App) {}

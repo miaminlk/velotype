@@ -46,12 +46,43 @@ impl StartupOpenPreference {
     }
 }
 
+/// Where pasted clipboard images should be stored before inserting Markdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImagePasteBehavior {
+    None,
+    CopyToDocumentFolder,
+    CopyToAssetsFolder,
+    CopyToNamedAssetsFolder,
+}
+
+impl ImagePasteBehavior {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::CopyToDocumentFolder => "copy_to_document_folder",
+            Self::CopyToAssetsFolder => "copy_to_assets_folder",
+            Self::CopyToNamedAssetsFolder => "copy_to_named_assets_folder",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "copy_to_document_folder" => Self::CopyToDocumentFolder,
+            "copy_to_assets_folder" => Self::CopyToAssetsFolder,
+            "copy_to_named_assets_folder" => Self::CopyToNamedAssetsFolder,
+            _ => Self::None,
+        }
+    }
+}
+
 /// User preferences persisted under the app config directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AppPreferences {
     pub(crate) startup_open: StartupOpenPreference,
     pub(crate) default_language_id: String,
     pub(crate) default_theme_id: String,
+    pub(crate) show_table_headers: bool,
+    pub(crate) image_paste_behavior: ImagePasteBehavior,
     pub(crate) keybindings: BTreeMap<String, Vec<String>>,
 }
 
@@ -61,7 +92,45 @@ impl Default for AppPreferences {
             startup_open: StartupOpenPreference::NewFile,
             default_language_id: DEFAULT_LANGUAGE_ID.into(),
             default_theme_id: DEFAULT_THEME_ID.into(),
+            show_table_headers: true,
+            image_paste_behavior: ImagePasteBehavior::None,
             keybindings: BTreeMap::new(),
+        }
+    }
+}
+
+/// Runtime-accessible editor settings mirrored from [`AppPreferences`] so the
+/// render path can read them without touching disk. Toggling persists the new
+/// value back to the preferences file.
+pub struct EditorSettings {
+    show_table_headers: bool,
+}
+
+impl Global for EditorSettings {}
+
+impl EditorSettings {
+    pub fn init(cx: &mut App, show_table_headers: bool) {
+        cx.set_global(Self { show_table_headers });
+    }
+
+    /// Whether table top rows are styled as headers. Defaults to `true` when
+    /// the global has not been installed (e.g. in unit tests).
+    pub fn show_table_headers(cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .map(|settings| settings.show_table_headers)
+            .unwrap_or(true)
+    }
+
+    pub fn set_show_table_headers(cx: &mut App, show_table_headers: bool) {
+        cx.set_global(Self { show_table_headers });
+        match read_app_preferences() {
+            Ok(mut preferences) => {
+                preferences.show_table_headers = show_table_headers;
+                if let Err(err) = save_app_preferences(&preferences) {
+                    eprintln!("failed to save table header preference: {err}");
+                }
+            }
+            Err(err) => eprintln!("failed to read table header preference: {err}"),
         }
     }
 }
@@ -71,12 +140,19 @@ struct PreferencesFile {
     startup: StartupPreferencesFile,
     language: LanguagePreferencesFile,
     theme: ThemePreferencesFile,
+    editor: EditorPreferencesFile,
     keybindings: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Serialize)]
 struct StartupPreferencesFile {
     open: String,
+}
+
+#[derive(Serialize)]
+struct EditorPreferencesFile {
+    show_table_headers: bool,
+    image_paste_behavior: String,
 }
 
 #[derive(Serialize)]
@@ -100,6 +176,10 @@ impl From<&AppPreferences> for PreferencesFile {
             },
             theme: ThemePreferencesFile {
                 default_theme_id: value.default_theme_id.clone(),
+            },
+            editor: EditorPreferencesFile {
+                show_table_headers: value.show_table_headers,
+                image_paste_behavior: value.image_paste_behavior.as_str().into(),
             },
             keybindings: normalize_shortcut_config(&value.keybindings),
         }
@@ -180,10 +260,24 @@ fn app_preferences_from_toml_value(
         .map(|keybindings| normalize_shortcut_config(&keybindings))
         .unwrap_or_default();
 
+    let show_table_headers = value
+        .get("editor")
+        .and_then(|editor| editor.get("show_table_headers"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let image_paste_behavior = value
+        .get("editor")
+        .and_then(|editor| editor.get("image_paste_behavior"))
+        .and_then(|value| value.as_str())
+        .map(ImagePasteBehavior::from_str)
+        .unwrap_or(ImagePasteBehavior::None);
+
     AppPreferences {
         startup_open,
         default_language_id,
         default_theme_id,
+        show_table_headers,
+        image_paste_behavior,
         keybindings,
     }
 }
@@ -308,15 +402,23 @@ pub(crate) fn import_theme_config_and_select(
 pub(crate) fn save_preferences_from_window(
     startup_open: StartupOpenPreference,
     default_theme_id: &str,
+    image_paste_behavior: ImagePasteBehavior,
     keybindings: BTreeMap<String, Vec<String>>,
 ) -> anyhow::Result<AppPreferences> {
     let dirs = VelotypeConfigDirs::from_system()?;
-    save_preferences_from_window_with_dirs(startup_open, default_theme_id, keybindings, &dirs)
+    save_preferences_from_window_with_dirs(
+        startup_open,
+        default_theme_id,
+        image_paste_behavior,
+        keybindings,
+        &dirs,
+    )
 }
 
 fn save_preferences_from_window_with_dirs(
     startup_open: StartupOpenPreference,
     default_theme_id: &str,
+    image_paste_behavior: ImagePasteBehavior,
     keybindings: BTreeMap<String, Vec<String>>,
     dirs: &VelotypeConfigDirs,
 ) -> anyhow::Result<AppPreferences> {
@@ -324,6 +426,7 @@ fn save_preferences_from_window_with_dirs(
         load_or_create_app_preferences_with_dirs_and_locales(dirs, sys_locale::get_locales())?;
     preferences.startup_open = startup_open;
     preferences.default_theme_id = default_theme_id.into();
+    preferences.image_paste_behavior = image_paste_behavior;
     preferences.keybindings = normalize_shortcut_config(&keybindings);
     save_app_preferences_with_dirs(&preferences, dirs)?;
     Ok(preferences)
@@ -342,6 +445,7 @@ fn update_app_preferences(
 enum PreferencesNav {
     File,
     Theme,
+    Image,
     Shortcuts,
 }
 
@@ -350,14 +454,17 @@ pub(crate) struct PreferencesWindow {
     nav: PreferencesNav,
     startup_open: StartupOpenPreference,
     selected_theme_id: String,
+    image_paste_behavior: ImagePasteBehavior,
     keybindings: BTreeMap<String, Vec<String>>,
     saved_startup_open: StartupOpenPreference,
     saved_theme_id: String,
+    saved_image_paste_behavior: ImagePasteBehavior,
     saved_keybindings: BTreeMap<String, Vec<String>>,
     theme_options: Vec<ThemeCatalogEntry>,
     focus_handle: FocusHandle,
     startup_dropdown_open: bool,
     theme_dropdown_open: bool,
+    image_dropdown_open: bool,
     recording_shortcut: Option<ShortcutCommand>,
     shortcut_error: Option<String>,
 }
@@ -377,19 +484,23 @@ impl PreferencesWindow {
             DEFAULT_THEME_ID.into()
         };
         let startup_open = preferences.startup_open;
+        let image_paste_behavior = preferences.image_paste_behavior;
         let keybindings = preferences.keybindings;
         Self {
             nav: PreferencesNav::File,
             startup_open,
             selected_theme_id: selected_theme_id.clone(),
+            image_paste_behavior,
             keybindings: keybindings.clone(),
             saved_startup_open: startup_open,
             saved_theme_id: selected_theme_id,
+            saved_image_paste_behavior: image_paste_behavior,
             saved_keybindings: keybindings,
             theme_options,
             focus_handle: cx.focus_handle(),
             startup_dropdown_open: false,
             theme_dropdown_open: false,
+            image_dropdown_open: false,
             recording_shortcut: None,
             shortcut_error: None,
         }
@@ -406,6 +517,7 @@ impl PreferencesWindow {
     fn has_unsaved_changes(&self) -> bool {
         self.startup_open != self.saved_startup_open
             || self.selected_theme_id != self.saved_theme_id
+            || self.image_paste_behavior != self.saved_image_paste_behavior
             || normalize_shortcut_config(&self.keybindings)
                 != normalize_shortcut_config(&self.saved_keybindings)
     }
@@ -414,6 +526,7 @@ impl PreferencesWindow {
         self.nav = PreferencesNav::File;
         self.startup_dropdown_open = false;
         self.theme_dropdown_open = false;
+        self.image_dropdown_open = false;
         self.recording_shortcut = None;
         cx.notify();
     }
@@ -422,6 +535,16 @@ impl PreferencesWindow {
         self.nav = PreferencesNav::Theme;
         self.startup_dropdown_open = false;
         self.theme_dropdown_open = false;
+        self.image_dropdown_open = false;
+        self.recording_shortcut = None;
+        cx.notify();
+    }
+
+    fn set_nav_image(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.nav = PreferencesNav::Image;
+        self.startup_dropdown_open = false;
+        self.theme_dropdown_open = false;
+        self.image_dropdown_open = false;
         self.recording_shortcut = None;
         cx.notify();
     }
@@ -430,6 +553,7 @@ impl PreferencesWindow {
         self.nav = PreferencesNav::Shortcuts;
         self.startup_dropdown_open = false;
         self.theme_dropdown_open = false;
+        self.image_dropdown_open = false;
         self.shortcut_error = None;
         cx.notify();
     }
@@ -437,12 +561,21 @@ impl PreferencesWindow {
     fn toggle_startup_dropdown(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.startup_dropdown_open = !self.startup_dropdown_open;
         self.theme_dropdown_open = false;
+        self.image_dropdown_open = false;
         cx.notify();
     }
 
     fn toggle_theme_dropdown(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.theme_dropdown_open = !self.theme_dropdown_open;
         self.startup_dropdown_open = false;
+        self.image_dropdown_open = false;
+        cx.notify();
+    }
+
+    fn toggle_image_dropdown(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.image_dropdown_open = !self.image_dropdown_open;
+        self.startup_dropdown_open = false;
+        self.theme_dropdown_open = false;
         cx.notify();
     }
 
@@ -469,6 +602,7 @@ impl PreferencesWindow {
         let preferences = match save_preferences_from_window(
             self.startup_open,
             &self.selected_theme_id,
+            self.image_paste_behavior,
             self.keybindings.clone(),
         ) {
             Ok(preferences) => preferences,
@@ -512,6 +646,7 @@ impl PreferencesWindow {
         self.focus_handle.focus(window);
         self.saved_startup_open = self.startup_open;
         self.saved_theme_id = self.selected_theme_id.clone();
+        self.saved_image_paste_behavior = self.image_paste_behavior;
         self.saved_keybindings = normalize_shortcut_config(&self.keybindings);
         cx.notify();
     }
@@ -735,6 +870,68 @@ impl PreferencesWindow {
         self.labeled_row(&strings.preferences_local_theme, dropdown, theme)
     }
 
+    fn image_paste_behavior_label(
+        behavior: ImagePasteBehavior,
+        strings: &crate::i18n::I18nStrings,
+    ) -> String {
+        match behavior {
+            ImagePasteBehavior::None => strings.preferences_image_paste_none.clone(),
+            ImagePasteBehavior::CopyToDocumentFolder => strings
+                .preferences_image_paste_copy_to_document_folder
+                .clone(),
+            ImagePasteBehavior::CopyToAssetsFolder => strings
+                .preferences_image_paste_copy_to_assets_folder
+                .clone(),
+            ImagePasteBehavior::CopyToNamedAssetsFolder => strings
+                .preferences_image_paste_copy_to_named_assets_folder
+                .clone(),
+        }
+    }
+
+    fn render_image_page(
+        &self,
+        theme: &Theme,
+        strings: &crate::i18n::I18nStrings,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let options = [
+            ImagePasteBehavior::None,
+            ImagePasteBehavior::CopyToDocumentFolder,
+            ImagePasteBehavior::CopyToAssetsFolder,
+            ImagePasteBehavior::CopyToNamedAssetsFolder,
+        ];
+        let mut dropdown = div()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .child(Self::dropdown_button(
+                "preferences-image-dropdown",
+                Self::image_paste_behavior_label(self.image_paste_behavior, strings),
+                theme,
+                Self::toggle_image_dropdown,
+                cx,
+            ));
+        if self.image_dropdown_open {
+            for (index, behavior) in options.into_iter().enumerate() {
+                let selected = behavior == self.image_paste_behavior;
+                let label = Self::image_paste_behavior_label(behavior, strings);
+                dropdown = dropdown.child(Self::dropdown_item(
+                    ("preferences-image-option", index),
+                    label,
+                    selected,
+                    theme,
+                    move |this, _, _, cx| {
+                        this.image_paste_behavior = behavior;
+                        this.image_dropdown_open = false;
+                        cx.notify();
+                    },
+                    cx,
+                ));
+            }
+        }
+        self.labeled_row(&strings.preferences_image_insert_behavior, dropdown, theme)
+    }
+
     fn shortcut_category_label(
         category: ShortcutCategory,
         strings: &crate::i18n::I18nStrings,
@@ -773,6 +970,10 @@ impl PreferencesWindow {
             ShortcutCommand::End => strings.preferences_shortcut_end.clone(),
             ShortcutCommand::BlockUp => strings.preferences_shortcut_block_up.clone(),
             ShortcutCommand::BlockDown => strings.preferences_shortcut_block_down.clone(),
+            ShortcutCommand::PageUp => strings.preferences_shortcut_page_up.clone(),
+            ShortcutCommand::PageDown => strings.preferences_shortcut_page_down.clone(),
+            ShortcutCommand::JumpToTop => strings.preferences_shortcut_jump_to_top.clone(),
+            ShortcutCommand::JumpToBottom => strings.preferences_shortcut_jump_to_bottom.clone(),
             ShortcutCommand::SelectLeft => strings.preferences_shortcut_select_left.clone(),
             ShortcutCommand::SelectRight => strings.preferences_shortcut_select_right.clone(),
             ShortcutCommand::WordSelectLeft => {
@@ -808,6 +1009,7 @@ impl PreferencesWindow {
             ShortcutCommand::QuitApplication => {
                 strings.preferences_shortcut_quit_application.clone()
             }
+            ShortcutCommand::CloseWindow => strings.preferences_shortcut_close_window.clone(),
             ShortcutCommand::DismissTransientUi => {
                 strings.preferences_shortcut_dismiss_transient_ui.clone()
             }
@@ -1180,6 +1382,14 @@ impl Render for PreferencesWindow {
                                 cx,
                             ))
                             .child(self.nav_button(
+                                "preferences-nav-image",
+                                strings.preferences_nav_image.clone(),
+                                self.nav == PreferencesNav::Image,
+                                &theme,
+                                Self::set_nav_image,
+                                cx,
+                            ))
+                            .child(self.nav_button(
                                 "preferences-nav-shortcuts",
                                 strings.preferences_nav_shortcuts.clone(),
                                 self.nav == PreferencesNav::Shortcuts,
@@ -1219,6 +1429,9 @@ impl Render for PreferencesWindow {
                                         PreferencesNav::Theme => {
                                             strings.preferences_nav_theme.clone()
                                         }
+                                        PreferencesNav::Image => {
+                                            strings.preferences_nav_image.clone()
+                                        }
                                         PreferencesNav::Shortcuts => {
                                             strings.preferences_nav_shortcuts.clone()
                                         }
@@ -1242,6 +1455,15 @@ impl Render for PreferencesWindow {
                                     .items_center()
                                     .justify_center()
                                     .child(self.render_theme_page(&theme, &strings, cx))
+                                    .into_any_element(),
+                                PreferencesNav::Image => div()
+                                    .w_full()
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(self.render_image_page(&theme, &strings, cx))
                                     .into_any_element(),
                                 PreferencesNav::Shortcuts => div()
                                     .w_full()
@@ -1383,7 +1605,7 @@ pub(crate) fn open_preferences_window(cx: &mut App) -> WindowHandle<PreferencesW
 #[cfg(test)]
 mod tests {
     use super::{
-        AppPreferences, StartupOpenPreference,
+        AppPreferences, ImagePasteBehavior, StartupOpenPreference,
         load_or_create_app_preferences_with_dirs_and_locales, open_preferences_window_with_state,
         read_app_preferences_with_dirs, save_app_preferences_with_dirs,
         save_preferences_from_window_with_dirs,
@@ -1447,6 +1669,29 @@ mod tests {
         assert_eq!(preferences.startup_open, StartupOpenPreference::NewFile);
         assert_eq!(preferences.default_language_id, "en-US");
         assert_eq!(preferences.default_theme_id, "velotype-light");
+        assert_eq!(preferences.image_paste_behavior, ImagePasteBehavior::None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_image_paste_behavior_falls_back_to_none() {
+        let root = std::env::temp_dir().join(format!(
+            "velotype-preferences-image-invalid-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root should exist");
+        let dirs = VelotypeConfigDirs::from_root(&root);
+        std::fs::write(
+            dirs.app_config_file(),
+            r#"
+                [editor]
+                image_paste_behavior = "somewhere-dangerous"
+            "#,
+        )
+        .expect("preferences should be written");
+
+        let preferences = read_app_preferences_with_dirs(&dirs).expect("preferences should load");
+        assert_eq!(preferences.image_paste_behavior, ImagePasteBehavior::None);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1478,6 +1723,8 @@ mod tests {
             startup_open: StartupOpenPreference::LastOpenedFile,
             default_language_id: "zh-CN".into(),
             default_theme_id: "velotype-light".into(),
+            show_table_headers: false,
+            image_paste_behavior: ImagePasteBehavior::CopyToAssetsFolder,
             keybindings: BTreeMap::new(),
         };
 
@@ -1491,6 +1738,8 @@ mod tests {
         assert!(text.contains("open = \"last_opened_file\""));
         assert!(text.contains("default_language_id = \"zh-CN\""));
         assert!(text.contains("default_theme_id = \"velotype-light\""));
+        assert!(text.contains("show_table_headers = false"));
+        assert!(text.contains("image_paste_behavior = \"copy_to_assets_folder\""));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1557,6 +1806,8 @@ mod tests {
             startup_open: StartupOpenPreference::NewFile,
             default_language_id: "zh-CN".into(),
             default_theme_id: "velotype".into(),
+            show_table_headers: true,
+            image_paste_behavior: ImagePasteBehavior::None,
             keybindings: BTreeMap::new(),
         };
         save_app_preferences_with_dirs(&preferences, &dirs)
@@ -1565,6 +1816,7 @@ mod tests {
         let saved = save_preferences_from_window_with_dirs(
             StartupOpenPreference::LastOpenedFile,
             "velotype-light",
+            ImagePasteBehavior::CopyToNamedAssetsFolder,
             BTreeMap::from([("save_document".to_string(), vec!["ctrl-alt-s".to_string()])]),
             &dirs,
         )
@@ -1572,6 +1824,10 @@ mod tests {
         assert_eq!(saved.default_language_id, "zh-CN");
         assert_eq!(saved.startup_open, StartupOpenPreference::LastOpenedFile);
         assert_eq!(saved.default_theme_id, "velotype-light");
+        assert_eq!(
+            saved.image_paste_behavior,
+            ImagePasteBehavior::CopyToNamedAssetsFolder
+        );
         assert_eq!(
             saved.keybindings.get("save_document"),
             Some(&vec!["ctrl-alt-s".to_string()])
@@ -1630,6 +1886,11 @@ mod tests {
                 preferences.startup_open = StartupOpenPreference::LastOpenedFile;
                 assert!(preferences.has_unsaved_changes());
                 preferences.startup_open = StartupOpenPreference::NewFile;
+                assert!(!preferences.has_unsaved_changes());
+
+                preferences.image_paste_behavior = ImagePasteBehavior::CopyToAssetsFolder;
+                assert!(preferences.has_unsaved_changes());
+                preferences.image_paste_behavior = ImagePasteBehavior::None;
                 assert!(!preferences.has_unsaved_changes());
 
                 preferences

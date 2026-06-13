@@ -5,8 +5,9 @@
 //! that the runtime tree can reconstruct is parsed into structured blocks.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
-use gpui::{Pixels, Point, SharedString};
+use gpui::{Image, Pixels, Point, SharedString};
 use uuid::Uuid;
 
 use crate::components::markdown::html::{HtmlDocument, parse_html_document};
@@ -174,6 +175,23 @@ impl BlockKind {
 
     pub fn is_code_block(&self) -> bool {
         matches!(self, Self::CodeBlock { .. })
+    }
+
+    /// Whether the right-click "Insert Table" affordance makes sense when a
+    /// block of this kind is the target. Atomic/structural blocks (tables,
+    /// code, math, etc.) render as self-contained widgets where inserting a
+    /// table from within them is nonsensical, so they are excluded.
+    pub fn allows_context_table_insert(&self) -> bool {
+        !matches!(
+            self,
+            Self::Table
+                | Self::CodeBlock { .. }
+                | Self::MathBlock
+                | Self::MermaidBlock
+                | Self::HtmlBlock
+                | Self::Comment
+                | Self::RawMarkdown
+        )
     }
 
     pub fn is_quote_container(&self) -> bool {
@@ -659,6 +677,16 @@ fn prefixed_multiline(content: &str, first_prefix: &str, continuation_prefix: &s
     rendered
 }
 
+/// Image payload extracted from GPUI's clipboard abstraction.
+///
+/// File-manager copies are usually represented as local paths, while bitmap
+/// copies from image editors or browsers arrive as encoded image bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PastedImageSource {
+    ClipboardImage(Image),
+    LocalPath(PathBuf),
+}
+
 /// Events emitted by a block to its parent editor when structural
 /// changes or focus transfers are needed that the block cannot handle alone.
 ///
@@ -700,6 +728,13 @@ pub enum BlockEvent {
         trailing: InlineTextTree,
         split_physical_lines: bool,
     },
+    /// An image-like clipboard payload was pasted. The editor resolves
+    /// storage preferences and inserts either an image block or image text.
+    RequestPasteImage {
+        leading: InlineTextTree,
+        source: PastedImageSource,
+        trailing: InlineTextTree,
+    },
     /// Replace the current editor-level cross-block selection with text
     /// submitted through the focused block input handler.
     RequestReplaceCrossBlockSelection {
@@ -708,6 +743,9 @@ pub enum BlockEvent {
         mark_inserted_text: bool,
         undo_kind: UndoCaptureKind,
     },
+    /// Ctrl/Cmd+A was pressed in rendered editing. The editor decides whether
+    /// this press selects the focused block or upgrades to all rendered blocks.
+    RequestRenderedSelectAll,
     /// Tab pressed in list context; increase the current block's nesting when
     /// the previous visible block can adopt it.
     RequestIndent,
@@ -738,10 +776,13 @@ pub enum BlockEvent {
     RequestAppendTableColumn,
     /// Append one empty body row to a native table.
     RequestAppendTableRow,
-    /// Update the currently previewed native table axis.
+    /// A native table axis handle was entered or left by the pointer.
+    /// `hovered` distinguishes the two so the editor can ignore a leave
+    /// that arrives after an adjacent handle has already taken the preview.
     RequestTableAxisPreview {
         kind: TableAxisKind,
-        index: Option<usize>,
+        index: usize,
+        hovered: bool,
     },
     /// Select one native table row or column for batch operations.
     RequestSelectTableAxis { kind: TableAxisKind, index: usize },
@@ -780,6 +821,17 @@ pub enum UndoCaptureKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_table_insert_excludes_atomic_blocks() {
+        assert!(BlockKind::Paragraph.allows_context_table_insert());
+        assert!(BlockKind::Heading { level: 1 }.allows_context_table_insert());
+        assert!(BlockKind::Quote.allows_context_table_insert());
+        assert!(!BlockKind::Table.allows_context_table_insert());
+        assert!(!BlockKind::CodeBlock { language: None }.allows_context_table_insert());
+        assert!(!BlockKind::MathBlock.allows_context_table_insert());
+        assert!(!BlockKind::MermaidBlock.allows_context_table_insert());
+    }
 
     #[test]
     fn detects_markdown_shortcuts() {

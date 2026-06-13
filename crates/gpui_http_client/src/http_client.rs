@@ -273,12 +273,56 @@ impl HttpClient for BlockedHttpClient {
 	}
 }
 
-pub struct FakeHttpClient;
+pub struct FakeHttpClient {
+	status: StatusCode,
+}
+
 impl FakeHttpClient {
 	pub fn with_404_response() -> Arc<HttpClientWithUrl> {
-		panic!("FakeHttpClient stub called");
+		Arc::new(HttpClientWithUrl::new(
+			Arc::new(FakeHttpClient {
+				status: StatusCode::NOT_FOUND,
+			}),
+			"http://fake.test",
+			None,
+		))
 	}
 	pub fn with_200_response() -> Arc<HttpClientWithUrl> {
-		panic!("FakeHttpClient stub called");
+		Arc::new(HttpClientWithUrl::new(
+			Arc::new(FakeHttpClient {
+				status: StatusCode::OK,
+			}),
+			"http://fake.test",
+			None,
+		))
+	}
+}
+
+impl HttpClient for FakeHttpClient {
+	fn send(
+		&self,
+		_req: Request<AsyncBody>,
+	) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+		let response = Response::builder()
+			.status(self.status)
+			.body(AsyncBody::empty())
+			.unwrap();
+		futures::future::ready(Ok(response)).boxed()
+	}
+
+	fn user_agent(&self) -> Option<&HeaderValue> {
+		None
+	}
+
+	fn proxy(&self) -> Option<&Url> {
+		None
+	}
+
+	fn type_name(&self) -> &'static str {
+		type_name::<Self>()
+	}
+
+	fn as_fake(&self) -> &FakeHttpClient {
+		self
 	}
 }

@@ -5,15 +5,19 @@
 //! tree mutations are delegated to [`DocumentTree`](super::tree::DocumentTree)
 //! so visible-order metadata stays in sync with every edit.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context as _, anyhow};
 use gpui::*;
 
 use super::Editor;
 use crate::components::{
     BlockEvent, BlockKind, BlockRecord, CollapsedCaretAffinity, IndentBlock, InlineTextTree,
-    OutdentBlock, TableCellPosition,
+    OutdentBlock, PastedImageSource, TableCellPosition,
 };
+use crate::config::{ImagePasteBehavior, read_app_preferences};
 
 impl Editor {
     fn focused_block_for_tab_key(
@@ -182,6 +186,7 @@ impl Editor {
                 | BlockEvent::RequestCalloutBreak
                 | BlockEvent::RequestMergeIntoPrev { .. }
                 | BlockEvent::RequestPasteMultiline { .. }
+                | BlockEvent::RequestPasteImage { .. }
                 | BlockEvent::RequestIndent
                 | BlockEvent::RequestOutdent
                 | BlockEvent::RequestDowngradeNestedListItemToChildParagraph
@@ -224,6 +229,355 @@ impl Editor {
             cx.notify();
         });
         self.focus_block(block.entity_id());
+    }
+
+    fn current_image_paste_behavior() -> ImagePasteBehavior {
+        read_app_preferences()
+            .map(|preferences| preferences.image_paste_behavior)
+            .unwrap_or(ImagePasteBehavior::None)
+    }
+
+    fn image_paste_root_dir(&self) -> anyhow::Result<PathBuf> {
+        if let Some(parent) = self.file_path.as_ref().and_then(|path| path.parent()) {
+            return Ok(parent.to_path_buf());
+        }
+        std::env::current_dir().context("failed to resolve current working directory")
+    }
+
+    fn clipboard_image_extension(format: ImageFormat) -> &'static str {
+        match format {
+            ImageFormat::Png => "png",
+            ImageFormat::Jpeg => "jpg",
+            ImageFormat::Webp => "webp",
+            ImageFormat::Gif => "gif",
+            ImageFormat::Svg => "svg",
+            ImageFormat::Bmp => "bmp",
+            ImageFormat::Tiff => "tiff",
+        }
+    }
+
+    fn image_target_dir(
+        &self,
+        behavior: ImagePasteBehavior,
+        root_dir: &Path,
+        source: &PastedImageSource,
+    ) -> anyhow::Result<PathBuf> {
+        match behavior {
+            ImagePasteBehavior::None | ImagePasteBehavior::CopyToDocumentFolder => {
+                Ok(root_dir.to_path_buf())
+            }
+            ImagePasteBehavior::CopyToAssetsFolder => Ok(root_dir.join("assets")),
+            ImagePasteBehavior::CopyToNamedAssetsFolder => {
+                let base = self
+                    .file_path
+                    .as_ref()
+                    .and_then(|path| path.file_stem())
+                    .and_then(|stem| stem.to_str())
+                    .filter(|stem| !stem.trim().is_empty())
+                    .unwrap_or("untitle");
+                if self.file_path.is_some() {
+                    return Ok(root_dir.join(format!("{base}.assets")));
+                }
+
+                for index in 0.. {
+                    let folder = if index == 0 {
+                        "untitle.assets".to_string()
+                    } else {
+                        format!("untitle{index}.assets")
+                    };
+                    let path = root_dir.join(folder);
+                    if !path.exists() {
+                        return Ok(path);
+                    }
+                    if matches!(source, PastedImageSource::LocalPath(_)) {
+                        continue;
+                    }
+                }
+                unreachable!("unbounded search should always return");
+            }
+        }
+    }
+
+    fn unique_file_path(dir: &Path, preferred_name: &str) -> PathBuf {
+        let preferred = Path::new(preferred_name);
+        let stem = preferred
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("image");
+        let extension = preferred.extension().and_then(|ext| ext.to_str());
+        for index in 0.. {
+            let file_name = if index == 0 {
+                preferred_name.to_string()
+            } else if let Some(extension) = extension {
+                format!("{stem}{index}.{extension}")
+            } else {
+                format!("{stem}{index}")
+            };
+            let candidate = dir.join(file_name);
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        unreachable!("unbounded search should always return");
+    }
+
+    fn path_parent_eq(left: &Path, right: &Path) -> bool {
+        let Some(parent) = left.parent() else {
+            return false;
+        };
+        let left = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+        left == right
+    }
+
+    fn materialize_pasted_image(
+        &self,
+        source: &PastedImageSource,
+    ) -> anyhow::Result<(PathBuf, bool)> {
+        let behavior = Self::current_image_paste_behavior();
+        let root_dir = self.image_paste_root_dir()?;
+
+        if matches!(behavior, ImagePasteBehavior::None)
+            && let PastedImageSource::LocalPath(path) = source
+        {
+            return Ok((path.clone(), false));
+        }
+
+        let target_dir = self.image_target_dir(behavior, &root_dir, source)?;
+        fs::create_dir_all(&target_dir)
+            .with_context(|| format!("failed to create '{}'", target_dir.display()))?;
+
+        match source {
+            PastedImageSource::LocalPath(path) => {
+                if Self::path_parent_eq(path, &target_dir) {
+                    return Ok((path.clone(), behavior != ImagePasteBehavior::None));
+                }
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("image");
+                let target = Self::unique_file_path(&target_dir, file_name);
+                fs::copy(path, &target).with_context(|| {
+                    format!(
+                        "failed to copy '{}' to '{}'",
+                        path.display(),
+                        target.display()
+                    )
+                })?;
+                Ok((target, behavior != ImagePasteBehavior::None))
+            }
+            PastedImageSource::ClipboardImage(image) => {
+                let file_name = format!(
+                    "pasted-image.{}",
+                    Self::clipboard_image_extension(image.format)
+                );
+                let target = Self::unique_file_path(&target_dir, &file_name);
+                fs::write(&target, &image.bytes)
+                    .with_context(|| format!("failed to write '{}'", target.display()))?;
+                Ok((target, behavior != ImagePasteBehavior::None))
+            }
+        }
+    }
+
+    fn markdown_path_string(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
+    fn markdown_image_target(path: &str) -> String {
+        path.chars()
+            .flat_map(|ch| match ch {
+                '\\' | '(' | ')' | '"' => ['\\', ch].into_iter().collect::<Vec<_>>(),
+                _ => [ch].into_iter().collect::<Vec<_>>(),
+            })
+            .collect()
+    }
+
+    fn markdown_image_alt(path: &Path) -> String {
+        let alt = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("image");
+        alt.chars()
+            .flat_map(|ch| match ch {
+                '\\' | ']' => ['\\', ch].into_iter().collect::<Vec<_>>(),
+                _ => [ch].into_iter().collect::<Vec<_>>(),
+            })
+            .collect()
+    }
+
+    fn relative_markdown_path(root_dir: &Path, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(root_dir).ok()?;
+        Some(format!("./{}", Self::markdown_path_string(relative)))
+    }
+
+    fn pasted_image_markdown(&self, source: &PastedImageSource) -> anyhow::Result<String> {
+        let root_dir = self.image_paste_root_dir()?;
+        let (path, relative) = self.materialize_pasted_image(source)?;
+        let path_text = if relative {
+            Self::relative_markdown_path(&root_dir, &path)
+                .ok_or_else(|| anyhow!("failed to create a relative image path"))?
+        } else {
+            Self::markdown_path_string(&path)
+        };
+        Ok(format!(
+            "![{}]({})",
+            Self::markdown_image_alt(&path),
+            Self::markdown_image_target(&path_text)
+        ))
+    }
+
+    fn show_image_paste_error(&self, err: anyhow::Error, cx: &mut Context<Self>) {
+        let strings = cx.global::<crate::i18n::I18nManager>().strings().clone();
+        if let Some(window) = cx.active_window() {
+            let ok = strings.info_dialog_ok.clone();
+            let title = strings.image_paste_failed_title.clone();
+            let detail = err.to_string();
+            let _ = window.update(cx, |_view, window, cx| {
+                let buttons = [ok.as_str()];
+                let _ = window.prompt(PromptLevel::Critical, &title, Some(&detail), &buttons, cx);
+            });
+        } else {
+            eprintln!("{}: {err}", strings.image_paste_failed_title);
+        }
+    }
+
+    fn inserted_image_tree_for_block(block: &super::Block, markdown: &str) -> InlineTextTree {
+        if block.uses_raw_text_editing() || block.kind().is_code_block() {
+            InlineTextTree::plain(markdown.to_string())
+        } else {
+            InlineTextTree::from_markdown(markdown)
+        }
+    }
+
+    fn replace_current_block_selection_with_image_text(
+        &mut self,
+        block: &Entity<super::Block>,
+        leading: &InlineTextTree,
+        markdown: &str,
+        trailing: &InlineTextTree,
+        cx: &mut Context<Self>,
+    ) {
+        let (kind, title, cursor) = block.read_with(cx, |block, _cx| {
+            let mut title = leading.clone();
+            title.append_tree(Self::inserted_image_tree_for_block(block, markdown));
+            let cursor = title.visible_len();
+            title.append_tree(trailing.clone());
+            (block.kind(), title, cursor)
+        });
+        Self::set_block_title_and_kind(block, kind, title, cursor, cx);
+        if let Some(binding) = self.table_cell_binding(block.entity_id()) {
+            self.sync_table_record_from_runtime(&binding.table_block, cx);
+        }
+        self.focus_block(block.entity_id());
+        self.rebuild_image_runtimes(cx);
+    }
+
+    fn insert_image_block_after_paragraph(
+        &mut self,
+        block: &Entity<super::Block>,
+        leading: &InlineTextTree,
+        markdown: &str,
+        trailing: &InlineTextTree,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(location) = self.document.find_block_location(block.entity_id()) else {
+            return;
+        };
+        let leading_empty = leading.visible_len() == 0;
+        let trailing_empty = trailing.visible_len() == 0;
+
+        if leading_empty {
+            Self::set_block_title_and_kind(
+                block,
+                BlockKind::Paragraph,
+                InlineTextTree::plain(markdown.to_string()),
+                markdown.len(),
+                cx,
+            );
+            let image_block = block.clone();
+            if !trailing_empty {
+                let trailing_block =
+                    Self::new_block(cx, BlockRecord::new(BlockKind::Paragraph, trailing.clone()));
+                self.document.insert_blocks_at(
+                    location.parent,
+                    location.index + 1,
+                    vec![trailing_block],
+                    cx,
+                );
+            }
+            self.focus_block(image_block.entity_id());
+            self.rebuild_image_runtimes(cx);
+            return;
+        }
+
+        Self::set_block_title_and_kind(
+            block,
+            BlockKind::Paragraph,
+            leading.clone(),
+            leading.visible_len(),
+            cx,
+        );
+        let image_block = Self::new_block(cx, BlockRecord::paragraph(markdown.to_string()));
+        let mut inserted = vec![image_block.clone()];
+        if !trailing_empty {
+            inserted.push(Self::new_block(
+                cx,
+                BlockRecord::new(BlockKind::Paragraph, trailing.clone()),
+            ));
+        }
+        self.document
+            .insert_blocks_at(location.parent, location.index + 1, inserted, cx);
+        self.focus_block(image_block.entity_id());
+        self.rebuild_image_runtimes(cx);
+    }
+
+    fn handle_paste_image_request(
+        &mut self,
+        block: Entity<super::Block>,
+        leading: &InlineTextTree,
+        source: &PastedImageSource,
+        trailing: &InlineTextTree,
+        cx: &mut Context<Self>,
+    ) {
+        let markdown = match self.pasted_image_markdown(source) {
+            Ok(markdown) => markdown,
+            Err(err) => {
+                self.show_image_paste_error(err, cx);
+                return;
+            }
+        };
+
+        if self.replace_cross_block_selection_with_text(
+            &markdown,
+            None,
+            false,
+            crate::components::UndoCaptureKind::NonCoalescible,
+            cx,
+        ) {
+            return;
+        }
+
+        self.prepare_undo_capture(crate::components::UndoCaptureKind::NonCoalescible, cx);
+        let can_insert_image_block = self.view_mode == super::ViewMode::Rendered
+            && block.read(cx).kind() == BlockKind::Paragraph
+            && self.table_cell_binding(block.entity_id()).is_none()
+            && !block.read(cx).uses_raw_text_editing();
+
+        if can_insert_image_block {
+            self.insert_image_block_after_paragraph(&block, leading, &markdown, trailing, cx);
+        } else {
+            self.replace_current_block_selection_with_image_text(
+                &block, leading, &markdown, trailing, cx,
+            );
+        }
+
+        self.mark_dirty(cx);
+        self.finalize_pending_undo_capture(cx);
+        cx.notify();
     }
 
     fn jump_to_footnote_definition(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
@@ -401,6 +755,68 @@ impl Editor {
         self.bump_scrollbar_visibility(cx);
     }
 
+    pub(crate) fn on_page_up(
+        &mut self,
+        _: &crate::components::PageUp,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let page = self.scroll_handle.bounds().size.height;
+        self.scroll_viewport_by(page, cx);
+    }
+
+    pub(crate) fn on_page_down(
+        &mut self,
+        _: &crate::components::PageDown,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let page = self.scroll_handle.bounds().size.height;
+        self.scroll_viewport_by(-page, cx);
+    }
+
+    pub(crate) fn on_jump_to_top(
+        &mut self,
+        _: &crate::components::JumpToTop,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_vertical_scroll_offset(px(0.0), cx);
+    }
+
+    pub(crate) fn on_jump_to_bottom(
+        &mut self,
+        _: &crate::components::JumpToBottom,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let max_offset_y = self.scroll_handle.max_offset().height.max(px(0.0));
+        self.set_vertical_scroll_offset(-max_offset_y, cx);
+    }
+
+    /// Scrolls the viewport vertically by `delta`. A positive `delta` moves
+    /// toward the start of the document; a negative one moves toward the end.
+    /// One page is the current viewport height, so the step tracks window size.
+    fn scroll_viewport_by(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        let target = self.scroll_handle.offset().y + delta;
+        self.set_vertical_scroll_offset(target, cx);
+    }
+
+    /// Applies an absolute vertical scroll offset, clamped to the scrollable
+    /// range. Offsets run from 0 at the top to `-max_offset` at the bottom.
+    fn set_vertical_scroll_offset(&mut self, target_y: Pixels, cx: &mut Context<Self>) {
+        let max_offset_y = self.scroll_handle.max_offset().height.max(px(0.0));
+        let mut offset = self.scroll_handle.offset();
+        offset.y = target_y.min(px(0.0)).max(-max_offset_y);
+        self.scroll_handle.set_offset(offset);
+        // A direct viewport scroll should stick, so cancel any queued pass that
+        // would otherwise re-center the active block on the next frame.
+        self.pending_scroll_active_block_into_view = false;
+        self.pending_scroll_recheck_after_layout = false;
+        self.bump_scrollbar_visibility(cx);
+        cx.notify();
+    }
+
     pub(crate) fn start_scrollbar_drag(
         &mut self,
         pointer_offset_y: f32,
@@ -472,6 +888,89 @@ impl Editor {
         true
     }
 
+    /// Focus a cell when keyboard navigation enters a table from an adjacent
+    /// block. Entering from above lands on the first header cell; entering from
+    /// below lands on the first cell of the last body row, falling back to the
+    /// header when the table has no body rows.
+    fn focus_table_entry_cell(
+        &mut self,
+        table_block: &Entity<super::Block>,
+        from_top: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(runtime) = table_block.read(cx).table_runtime.clone() else {
+            return false;
+        };
+        let cell = if from_top {
+            runtime.header.first().cloned()
+        } else {
+            runtime
+                .rows
+                .last()
+                .and_then(|row| row.first())
+                .cloned()
+                .or_else(|| runtime.header.first().cloned())
+        };
+        let Some(cell) = cell else {
+            return false;
+        };
+        self.focus_block(cell.entity_id());
+        cx.notify();
+        true
+    }
+
+    /// Move focus from a table edge to the block immediately above (delta < 0)
+    /// or below (delta > 0) it, mirroring how plain blocks transfer focus when
+    /// the caret leaves their first or last line. When the neighbor is itself a
+    /// table, drop into one of its cells so the caret stays editable instead of
+    /// landing on the table container. `to_block_start` lands the caret at the
+    /// neighbor's start (Block Up/Down semantics) rather than the nearest edge
+    /// (Move Up/Down semantics).
+    fn focus_block_adjacent_to_table(
+        &mut self,
+        table_block: &Entity<super::Block>,
+        delta: i32,
+        to_block_start: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let visible = self.document.flatten_visible_blocks();
+        let Some(index) = visible
+            .iter()
+            .position(|visible| visible.entity.entity_id() == table_block.entity_id())
+        else {
+            return;
+        };
+        let target_index = if delta < 0 {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1)
+        };
+        let Some(target) = target_index
+            .and_then(|target_index| visible.get(target_index))
+            .map(|visible| visible.entity.clone())
+        else {
+            return;
+        };
+        if target.read(cx).kind() == BlockKind::Table
+            && self.focus_table_entry_cell(&target, delta > 0, cx)
+        {
+            return;
+        }
+        self.focus_block(target.entity_id());
+        if to_block_start {
+            target.update(cx, |target, cx| target.move_to(0, cx));
+        } else {
+            let prefer_last_line = delta < 0;
+            let offset = target
+                .read(cx)
+                .entry_offset_for_vertical_focus(prefer_last_line, None);
+            target.update(cx, move |target, cx| {
+                target.move_to_with_preferred_x(offset, None, cx);
+            });
+        }
+        cx.notify();
+    }
+
     fn focus_table_cell_horizontal_neighbor(
         &mut self,
         table_block: &Entity<super::Block>,
@@ -524,12 +1023,12 @@ impl Editor {
         } else {
             position.row.checked_add(delta as usize)
         };
-        let Some(next_row) = next_row else {
+        // Moving past the first/last row leaves the table for the adjacent
+        // block rather than stopping at the edge.
+        let Some(next_row) = next_row.filter(|row| *row <= max_row) else {
+            self.focus_block_adjacent_to_table(table_block, delta, false, cx);
             return;
         };
-        if next_row > max_row {
-            return;
-        }
 
         let next_position = TableCellPosition {
             row: next_row,
@@ -545,6 +1044,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         if Self::block_event_clears_cross_block_selection(event) {
+            self.rendered_select_all_cycle = None;
             self.clear_cross_block_selection(cx);
         }
 
@@ -631,6 +1131,14 @@ impl Editor {
                     1,
                     cx,
                 );
+            }
+            // Block Up/Down treat the table as a single block: leave it
+            // entirely for the block above/below rather than stepping by cell.
+            BlockEvent::RequestBlockUp => {
+                self.focus_block_adjacent_to_table(&binding.table_block, -1, true, cx);
+            }
+            BlockEvent::RequestBlockDown => {
+                self.focus_block_adjacent_to_table(&binding.table_block, 1, true, cx);
             }
             _ => {}
         }
@@ -837,12 +1345,28 @@ impl Editor {
             return;
         }
 
+        if matches!(event, BlockEvent::RequestRenderedSelectAll) {
+            self.on_rendered_select_all_press(block, cx);
+            return;
+        }
+
+        if let BlockEvent::RequestPasteImage {
+            leading,
+            source,
+            trailing,
+        } = event
+        {
+            self.handle_paste_image_request(block, leading, source, trailing, cx);
+            return;
+        }
+
         if let Some(binding) = self.table_cell_binding(block.entity_id()) {
             self.on_table_cell_event(binding, event, cx);
             return;
         }
 
         if Self::block_event_clears_cross_block_selection(event) {
+            self.rendered_select_all_cycle = None;
             self.clear_cross_block_selection(cx);
         }
 
@@ -1048,10 +1572,20 @@ impl Editor {
                 self.prepare_undo_capture(crate::components::UndoCaptureKind::NonCoalescible, cx);
 
                 let current_kind = block.read(cx).kind();
-                let mut first_title = leading.clone();
-                first_title.append_tree(InlineTextTree::from_markdown(&lines[0]));
-
-                let tail_lines = lines[1..].to_vec();
+                // Structural Markdown (tables, fences, containers) must be parsed
+                // as whole blocks. The plain-text path folds the first pasted line
+                // into the current paragraph, which would strip a table's header
+                // row, so structural pastes hand every line to the importer and
+                // leave the pre-cursor text in place.
+                let structural = !*split_physical_lines;
+                let leading_empty = leading.visible_len() == 0;
+                let (mut first_title, tail_lines) = if structural {
+                    (leading.clone(), lines.clone())
+                } else {
+                    let mut first_title = leading.clone();
+                    first_title.append_tree(InlineTextTree::from_markdown(&lines[0]));
+                    (first_title, lines[1..].to_vec())
+                };
                 if tail_lines.is_empty() {
                     first_title.append_tree(trailing.clone());
                     let cursor = first_title.visible_len();
@@ -1079,11 +1613,14 @@ impl Editor {
                 // the classifier saw structural Markdown, delegate the tail to
                 // the normal importer so tables, fences, and containers stay
                 // intact instead of becoming paragraphs.
-                let inserted_roots = if *split_physical_lines {
+                let mut inserted_roots = if *split_physical_lines {
                     Self::build_plain_paste_blocks_from_lines(cx, &tail_lines)
                 } else {
                     Self::build_blocks_from_lines(cx, &tail_lines)
                 };
+                if structural && trailing.visible_len() > 0 {
+                    inserted_roots.push(Self::new_block(cx, BlockRecord::paragraph(String::new())));
+                }
                 self.document.insert_blocks_at(
                     location.parent,
                     location.index + 1,
@@ -1132,6 +1669,15 @@ impl Editor {
                     self.focus_block(focus_block.entity_id());
                 }
 
+                // When structural content is pasted onto an empty line there is
+                // no pre-cursor text to keep, so drop the now-empty paragraph
+                // rather than leaving a blank line above the pasted blocks.
+                if structural && leading_empty {
+                    self.document.with_structure_mutation(cx, |document, cx| {
+                        document.remove_block_by_id_raw(block.entity_id(), cx);
+                    });
+                }
+
                 if quote_related {
                     self.normalize_rendered_quote_structure(cx);
                 }
@@ -1139,7 +1685,8 @@ impl Editor {
                 self.finalize_pending_undo_capture(cx);
                 cx.notify();
             }
-            BlockEvent::RequestReplaceCrossBlockSelection { .. } => {}
+            BlockEvent::RequestPasteImage { .. }
+            | BlockEvent::RequestReplaceCrossBlockSelection { .. } => {}
             BlockEvent::RequestIndent => {
                 if current_visible_index == 0 {
                     return;
@@ -1315,9 +1862,13 @@ impl Editor {
                     self.finalize_pending_undo_capture(cx);
                 }
             }
-            BlockEvent::RequestTableAxisPreview { kind, index } => {
+            BlockEvent::RequestTableAxisPreview {
+                kind,
+                index,
+                hovered,
+            } => {
                 if block.read(cx).kind() == BlockKind::Table {
-                    self.preview_table_axis(block.entity_id(), *kind, *index, cx);
+                    self.preview_table_axis(block.entity_id(), *kind, *index, *hovered, cx);
                 }
             }
             BlockEvent::RequestSelectTableAxis { kind, index } => {
@@ -1342,6 +1893,13 @@ impl Editor {
                 }
 
                 let target = visible_before[current_visible_index - 1].entity.clone();
+                // Entering a table from below lands in a body cell instead of
+                // the non-editable table container.
+                if target.read(cx).kind() == BlockKind::Table
+                    && self.focus_table_entry_cell(&target, false, cx)
+                {
+                    return;
+                }
                 let target_x = preferred_x.map(px);
                 let offset = target
                     .read(cx)
@@ -1358,6 +1916,13 @@ impl Editor {
                 }
 
                 let target = visible_before[current_visible_index + 1].entity.clone();
+                // Entering a table from above lands in a header cell instead of
+                // the non-editable table container.
+                if target.read(cx).kind() == BlockKind::Table
+                    && self.focus_table_entry_cell(&target, true, cx)
+                {
+                    return;
+                }
                 let target_x = preferred_x.map(px);
                 let offset = target
                     .read(cx)
@@ -1374,6 +1939,11 @@ impl Editor {
                 }
 
                 let target = visible_before[current_visible_index - 1].entity.clone();
+                if target.read(cx).kind() == BlockKind::Table
+                    && self.focus_table_entry_cell(&target, false, cx)
+                {
+                    return;
+                }
                 self.focus_block(target.entity_id());
                 target.update(cx, |target, cx| target.move_to(0, cx));
                 cx.notify();
@@ -1384,6 +1954,11 @@ impl Editor {
                 }
 
                 let target = visible_before[current_visible_index + 1].entity.clone();
+                if target.read(cx).kind() == BlockKind::Table
+                    && self.focus_table_entry_cell(&target, true, cx)
+                {
+                    return;
+                }
                 self.focus_block(target.entity_id());
                 target.update(cx, |target, cx| target.move_to(0, cx));
                 cx.notify();
@@ -1458,6 +2033,7 @@ impl Editor {
                 }
                 cx.notify();
             }
+            BlockEvent::RequestRenderedSelectAll => {}
             BlockEvent::PrepareUndo { .. } => {}
         }
     }
@@ -1467,10 +2043,10 @@ impl Editor {
 mod tests {
     use super::Editor;
     use crate::components::{
-        BlockEvent, BlockKind, BlockRecord, CalloutVariant, Delete, DeleteBack, ExitCodeBlock,
-        InlineTextTree, Newline,
+        Block, BlockEvent, BlockKind, BlockRecord, CalloutVariant, Delete, DeleteBack,
+        ExitCodeBlock, InlineTextTree, Newline,
     };
-    use gpui::{AppContext, TestAppContext};
+    use gpui::{App, AppContext, Entity, TestAppContext};
 
     #[gpui::test]
     async fn request_quote_break_creates_new_root_leaf_quote_group(cx: &mut TestAppContext) {
@@ -1565,6 +2141,60 @@ mod tests {
             );
             assert_eq!(editor.pending_focus, Some(paragraph.entity_id()));
             assert_eq!(paragraph.read(cx).selected_range, expected_backref_range);
+        });
+    }
+
+    #[gpui::test]
+    async fn image_block_insert_preserves_surrounding_paragraph_text(cx: &mut TestAppContext) {
+        let editor = cx.new(|cx| Editor::from_markdown(cx, "beforeafter".to_string(), None));
+
+        editor.update(cx, |editor, cx| {
+            let paragraph = editor.document.first_root().expect("paragraph").clone();
+            editor.insert_image_block_after_paragraph(
+                &paragraph,
+                &InlineTextTree::plain("before"),
+                "![image](./assets/image.png)",
+                &InlineTextTree::plain("after"),
+                cx,
+            );
+
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 3);
+            assert_eq!(visible[0].entity.read(cx).display_text(), "before");
+            assert_eq!(
+                visible[1].entity.read(cx).display_text(),
+                "![image](./assets/image.png)"
+            );
+            assert!(visible[1].entity.read(cx).image_runtime().is_some());
+            assert_eq!(visible[2].entity.read(cx).display_text(), "after");
+        });
+    }
+
+    #[gpui::test]
+    async fn image_paste_text_in_code_block_stays_inside_block(cx: &mut TestAppContext) {
+        let editor =
+            cx.new(|cx| Editor::from_markdown(cx, "```\nbeforeafter\n```".to_string(), None));
+
+        editor.update(cx, |editor, cx| {
+            let block = editor.document.first_root().expect("code block").clone();
+            editor.replace_current_block_selection_with_image_text(
+                &block,
+                &InlineTextTree::plain("before"),
+                "![image](./assets/image.png)",
+                &InlineTextTree::plain("after"),
+                cx,
+            );
+
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(
+                visible[0].entity.read(cx).kind(),
+                BlockKind::CodeBlock { language: None }
+            );
+            assert_eq!(
+                visible[0].entity.read(cx).display_text(),
+                "before![image](./assets/image.png)after"
+            );
         });
     }
 
@@ -1803,7 +2433,6 @@ mod tests {
             editor.update(cx, |editor, cx| {
                 let block = editor.document.visible_blocks()[0].entity.clone();
                 block.update(cx, |block, block_cx| {
-                    assert!(!block.sync_inline_math_source_edit_for_focus(true));
                     block.move_to(block.visible_len(), block_cx);
                     block.on_newline(&Newline, window, block_cx);
                 });
@@ -1821,7 +2450,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn enter_inside_inline_math_source_edit_creates_new_block(cx: &mut TestAppContext) {
+    async fn enter_inside_inline_math_paragraph_creates_new_block(cx: &mut TestAppContext) {
         let cx = cx.add_empty_window();
         let editor = cx.new(|cx| Editor::from_markdown(cx, "$n^2$".to_string(), None));
 
@@ -1829,7 +2458,6 @@ mod tests {
             editor.update(cx, |editor, cx| {
                 let block = editor.document.visible_blocks()[0].entity.clone();
                 block.update(cx, |block, block_cx| {
-                    assert!(block.sync_inline_math_source_edit_for_focus(true));
                     block.move_to(block.visible_len(), block_cx);
                     block.on_newline(&Newline, window, block_cx);
                 });
@@ -1845,6 +2473,44 @@ mod tests {
             assert_eq!(visible[1].entity.read(cx).kind(), BlockKind::Paragraph);
             assert_eq!(visible[1].entity.read(cx).display_text(), "");
             assert_eq!(editor.document.markdown_text(cx), "$n^2$\n\n");
+        });
+    }
+
+    #[gpui::test]
+    async fn trailing_fence_line_enter_closes_code_block(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let editor =
+            cx.new(|cx| Editor::from_markdown(cx, "```rust\nlet x = 1;\n```".to_string(), None));
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let block = editor.document.visible_blocks()[0].entity.clone();
+                block.update(cx, |block, block_cx| {
+                    // Type a closing fence on a fresh last line, then Enter.
+                    let end = block.visible_len();
+                    block.replace_text_in_visible_range(end..end, "\n```", None, false, block_cx);
+                    block.move_to(block.visible_len(), block_cx);
+                    block.on_newline(&Newline, window, block_cx);
+                });
+            });
+        });
+
+        editor.update(cx, |editor, cx| {
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 2);
+            assert_eq!(
+                visible[0].entity.read(cx).kind(),
+                BlockKind::CodeBlock {
+                    language: Some("rust".into())
+                }
+            );
+            assert_eq!(visible[0].entity.read(cx).display_text(), "let x = 1;");
+            assert_eq!(visible[1].entity.read(cx).kind(), BlockKind::Paragraph);
+            assert_eq!(visible[1].entity.read(cx).display_text(), "");
+            assert_eq!(
+                editor.document.markdown_text(cx),
+                "```rust\nlet x = 1;\n```\n\n"
+            );
         });
     }
 
@@ -1904,6 +2570,36 @@ mod tests {
             assert_eq!(block.selected_range, 3..3);
             assert!(block.uses_raw_text_editing());
             assert_eq!(editor.document.markdown_text(cx), "$$\n\n$$");
+        });
+    }
+
+    #[gpui::test]
+    async fn dollar_dollar_prefix_then_enter_wraps_existing_line(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let editor = cx.new(|cx| Editor::from_markdown(cx, "E = mc^2".to_string(), None));
+
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let block = editor.document.visible_blocks()[0].entity.clone();
+                block.update(cx, |block, block_cx| {
+                    // Home, type the fence in front of the formula, then Enter.
+                    block.move_to(0, block_cx);
+                    block.replace_text_in_visible_range(0..0, "$$", None, false, block_cx);
+                    block.move_to("$$".len(), block_cx);
+                    block.on_newline(&Newline, window, block_cx);
+                });
+            });
+        });
+
+        editor.update(cx, |editor, cx| {
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 1);
+            let block = visible[0].entity.read(cx);
+            assert_eq!(block.kind(), BlockKind::MathBlock);
+            // The pre-existing text is kept as the formula body.
+            assert_eq!(block.display_text(), "$$\nE = mc^2\n$$");
+            assert_eq!(block.selected_range, "$$\n".len().."$$\n".len());
+            assert_eq!(editor.document.markdown_text(cx), "$$\nE = mc^2\n$$");
         });
     }
 
@@ -2089,6 +2785,180 @@ mod tests {
         });
     }
 
+    fn table_root(editor: &Editor, cx: &App) -> Entity<Block> {
+        editor
+            .document
+            .visible_blocks()
+            .iter()
+            .map(|visible| visible.entity.clone())
+            .find(|block| block.read(cx).kind() == BlockKind::Table)
+            .expect("table root")
+    }
+
+    #[gpui::test]
+    async fn arrow_down_from_last_row_exits_table_to_following_block(cx: &mut TestAppContext) {
+        let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |", "", "after"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            let table = table_root(editor, cx);
+            let cell = table
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .rows
+                .last()
+                .and_then(|row| row.first())
+                .cloned()
+                .expect("last row cell");
+            editor.on_block_event(
+                cell,
+                &BlockEvent::RequestTableCellMoveVertical { delta: 1 },
+                cx,
+            );
+
+            let following = editor.document.visible_blocks()[1].entity.clone();
+            assert_eq!(following.read(cx).display_text(), "after");
+            assert_eq!(editor.pending_focus, Some(following.entity_id()));
+        });
+    }
+
+    #[gpui::test]
+    async fn arrow_up_from_header_exits_table_to_preceding_block(cx: &mut TestAppContext) {
+        let markdown = ["before", "", "| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            let table = table_root(editor, cx);
+            let cell = table
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .header
+                .first()
+                .cloned()
+                .expect("header cell");
+            editor.on_block_event(
+                cell,
+                &BlockEvent::RequestTableCellMoveVertical { delta: -1 },
+                cx,
+            );
+
+            let preceding = editor.document.visible_blocks()[0].entity.clone();
+            assert_eq!(preceding.read(cx).display_text(), "before");
+            assert_eq!(editor.pending_focus, Some(preceding.entity_id()));
+        });
+    }
+
+    #[gpui::test]
+    async fn arrow_down_into_table_focuses_header_cell(cx: &mut TestAppContext) {
+        let markdown = ["before", "", "| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            let paragraph = editor
+                .document
+                .first_root()
+                .expect("paragraph root")
+                .clone();
+            editor.on_block_event(
+                paragraph,
+                &BlockEvent::RequestFocusNext { preferred_x: None },
+                cx,
+            );
+
+            let header_cell = table_root(editor, cx)
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .header
+                .first()
+                .map(|cell| cell.entity_id());
+            assert_eq!(editor.pending_focus, header_cell);
+        });
+    }
+
+    #[gpui::test]
+    async fn arrow_up_into_table_focuses_last_row_cell(cx: &mut TestAppContext) {
+        let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |", "", "after"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            let paragraph = editor.document.visible_blocks()[1].entity.clone();
+            assert_eq!(paragraph.read(cx).display_text(), "after");
+            editor.on_block_event(
+                paragraph,
+                &BlockEvent::RequestFocusPrev { preferred_x: None },
+                cx,
+            );
+
+            let last_row_cell = table_root(editor, cx)
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .rows
+                .last()
+                .and_then(|row| row.first())
+                .map(|cell| cell.entity_id());
+            assert_eq!(editor.pending_focus, last_row_cell);
+        });
+    }
+
+    #[gpui::test]
+    async fn block_up_from_table_cell_exits_to_preceding_block(cx: &mut TestAppContext) {
+        let markdown = ["before", "", "| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            // Start from a body cell, not the header, to confirm Block Up leaves
+            // the whole table instead of stepping to the cell above.
+            let cell = table_root(editor, cx)
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .rows
+                .last()
+                .and_then(|row| row.first())
+                .cloned()
+                .expect("body cell");
+            editor.on_block_event(cell, &BlockEvent::RequestBlockUp, cx);
+
+            let preceding = editor.document.visible_blocks()[0].entity.clone();
+            assert_eq!(preceding.read(cx).display_text(), "before");
+            assert_eq!(editor.pending_focus, Some(preceding.entity_id()));
+        });
+    }
+
+    #[gpui::test]
+    async fn block_down_into_table_focuses_header_cell(cx: &mut TestAppContext) {
+        let markdown = ["before", "", "| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+        let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+        editor.update(cx, |editor, cx| {
+            let paragraph = editor
+                .document
+                .first_root()
+                .expect("paragraph root")
+                .clone();
+            editor.on_block_event(paragraph, &BlockEvent::RequestBlockDown, cx);
+
+            let header_cell = table_root(editor, cx)
+                .read(cx)
+                .table_runtime
+                .as_ref()
+                .expect("table runtime")
+                .header
+                .first()
+                .map(|cell| cell.entity_id());
+            assert_eq!(editor.pending_focus, header_cell);
+        });
+    }
+
     #[gpui::test]
     async fn plain_multiline_paste_with_scripts_splits_physical_lines(cx: &mut TestAppContext) {
         let editor = cx.new(|cx| Editor::from_markdown(cx, String::new(), None));
@@ -2116,6 +2986,157 @@ mod tests {
             assert_eq!(visible[1].entity.read(cx).display_text(), "CO2");
             assert_eq!(visible[2].entity.read(cx).display_text(), "xn");
             assert_eq!(editor.document.markdown_text(cx), "H~2~O\n\nCO~2~\n\nx^n^");
+        });
+    }
+
+    #[gpui::test]
+    async fn structural_paste_of_table_renders_native_table(cx: &mut TestAppContext) {
+        let editor = cx.new(|cx| Editor::from_markdown(cx, String::new(), None));
+
+        editor.update(cx, |editor, cx| {
+            let block = editor.document.visible_blocks()[0].entity.clone();
+            editor.on_block_event(
+                block,
+                &BlockEvent::RequestPasteMultiline {
+                    leading: InlineTextTree::plain(String::new()),
+                    lines: vec![
+                        "| A | B |".to_string(),
+                        "| --- | --- |".to_string(),
+                        "| 1 | 2 |".to_string(),
+                    ],
+                    trailing: InlineTextTree::plain(String::new()),
+                    split_physical_lines: false,
+                },
+                cx,
+            );
+
+            // The header row must survive: previously the first pasted line was
+            // folded into the paragraph, leaving the alignment row to masquerade
+            // as the header. The empty paste target is also dropped.
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 1);
+            let table = visible[0].entity.read(cx);
+            assert_eq!(table.kind(), BlockKind::Table);
+            let data = table.record.table.as_ref().expect("table data");
+            assert_eq!(data.header[0].serialize_markdown(), "A");
+            assert_eq!(data.header[1].serialize_markdown(), "B");
+            assert_eq!(data.rows.len(), 1);
+            assert_eq!(data.rows[0][0].serialize_markdown(), "1");
+            assert_eq!(data.rows[0][1].serialize_markdown(), "2");
+        });
+    }
+
+    #[gpui::test]
+    async fn structural_paste_of_code_block_renders_native_code_block(cx: &mut TestAppContext) {
+        let editor = cx.new(|cx| Editor::from_markdown(cx, String::new(), None));
+
+        editor.update(cx, |editor, cx| {
+            let block = editor.document.visible_blocks()[0].entity.clone();
+            editor.on_block_event(
+                block,
+                &BlockEvent::RequestPasteMultiline {
+                    leading: InlineTextTree::plain(String::new()),
+                    lines: vec![
+                        "```rust".to_string(),
+                        "fn main() {}".to_string(),
+                        "```".to_string(),
+                    ],
+                    trailing: InlineTextTree::plain(String::new()),
+                    split_physical_lines: false,
+                },
+                cx,
+            );
+
+            // The fence is structural, so the whole paste goes through the block
+            // importer rather than the plain-text path: the opening ```rust line is
+            // no longer folded into a paragraph, and the empty paste target is
+            // dropped, leaving a single native code block.
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 1);
+            let code = visible[0].entity.read(cx);
+            assert_eq!(
+                code.kind(),
+                BlockKind::CodeBlock {
+                    language: Some("rust".into())
+                }
+            );
+            assert_eq!(code.display_text(), "fn main() {}");
+            assert_eq!(
+                editor.document.markdown_text(cx),
+                "```rust\nfn main() {}\n```"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn structural_paste_of_table_preserves_surrounding_text(cx: &mut TestAppContext) {
+        let editor = cx.new(|cx| Editor::from_markdown(cx, "beforeafter".into(), None));
+
+        editor.update(cx, |editor, cx| {
+            let block = editor.document.visible_blocks()[0].entity.clone();
+            editor.on_block_event(
+                block,
+                &BlockEvent::RequestPasteMultiline {
+                    leading: InlineTextTree::plain("before"),
+                    lines: vec![
+                        "| A | B |".to_string(),
+                        "| --- | --- |".to_string(),
+                        "| 1 | 2 |".to_string(),
+                    ],
+                    trailing: InlineTextTree::plain("after"),
+                    split_physical_lines: false,
+                },
+                cx,
+            );
+
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 3);
+            assert_eq!(visible[0].entity.read(cx).display_text(), "before");
+
+            let table = visible[1].entity.read(cx);
+            assert_eq!(table.kind(), BlockKind::Table);
+            let data = table.record.table.as_ref().expect("table data");
+            assert_eq!(data.header[0].serialize_markdown(), "A");
+            assert_eq!(data.rows[0][0].serialize_markdown(), "1");
+
+            assert_eq!(visible[2].entity.read(cx).kind(), BlockKind::Paragraph);
+            assert_eq!(visible[2].entity.read(cx).display_text(), "after");
+        });
+    }
+
+    #[gpui::test]
+    async fn structural_paste_of_code_block_preserves_surrounding_text(cx: &mut TestAppContext) {
+        let editor = cx.new(|cx| Editor::from_markdown(cx, "beforeafter".into(), None));
+
+        editor.update(cx, |editor, cx| {
+            let block = editor.document.visible_blocks()[0].entity.clone();
+            editor.on_block_event(
+                block,
+                &BlockEvent::RequestPasteMultiline {
+                    leading: InlineTextTree::plain("before"),
+                    lines: vec![
+                        "```rust".to_string(),
+                        "fn main() {}".to_string(),
+                        "```".to_string(),
+                    ],
+                    trailing: InlineTextTree::plain("after"),
+                    split_physical_lines: false,
+                },
+                cx,
+            );
+
+            let visible = editor.document.visible_blocks();
+            assert_eq!(visible.len(), 3);
+            assert_eq!(visible[0].entity.read(cx).display_text(), "before");
+            assert_eq!(
+                visible[1].entity.read(cx).kind(),
+                BlockKind::CodeBlock {
+                    language: Some("rust".into())
+                }
+            );
+            assert_eq!(visible[1].entity.read(cx).display_text(), "fn main() {}");
+            assert_eq!(visible[2].entity.read(cx).kind(), BlockKind::Paragraph);
+            assert_eq!(visible[2].entity.read(cx).display_text(), "after");
         });
     }
 

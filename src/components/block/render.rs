@@ -6,6 +6,8 @@
 
 use gpui::*;
 
+const BLOCK_EDITOR_CONTEXT: &str = "BlockEditor";
+
 use super::element::{BlockTextElement, CodeLanguageInputElement};
 use super::{Block, BlockEvent, BlockKind, ImageResolvedSource, ImageRuntime};
 use crate::components::{
@@ -50,6 +52,16 @@ fn column_axis_gutter_visible(
             ..
         })
     )
+}
+
+/// Makes a row-axis highlight color more opaque (more solid, still translucent)
+/// for the header row, keeping the theme's hue so the header handle reads as a
+/// stronger version of the body-row handles in whatever colors the theme uses.
+fn header_axis_emphasis(color: Hsla) -> Hsla {
+    Hsla {
+        a: color.a + (1.0 - color.a) * 0.5,
+        ..color
+    }
 }
 
 fn fallback_image_label(alt: &str, strings: &I18nStrings) -> SharedString {
@@ -716,7 +728,7 @@ impl Block {
             };
         }
 
-        self.render_mixed_inline_visual_runs(theme, text_color, font_size, font_weight)
+        self.render_mixed_inline_visual_runs(theme, text_color, font_size, font_weight, cx)
     }
 
     fn render_mixed_inline_visual_runs(
@@ -725,6 +737,7 @@ impl Block {
         base_color: Hsla,
         font_size: f32,
         font_weight: FontWeight,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         self.render_inline_tree_runs(
             &self.record.title,
@@ -732,6 +745,7 @@ impl Block {
             base_color,
             font_size,
             font_weight,
+            cx,
         )
     }
 
@@ -742,6 +756,7 @@ impl Block {
         base_color: Hsla,
         font_size: f32,
         font_weight: FontWeight,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
             .w_full()
@@ -758,6 +773,7 @@ impl Block {
                 base_color,
                 font_size,
                 font_weight,
+                cx,
             ))
             .into_any_element()
     }
@@ -769,6 +785,7 @@ impl Block {
         base_color: Hsla,
         font_size: f32,
         font_weight: FontWeight,
+        cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let cache = tree.render_cache();
         let text = cache.visible_text();
@@ -777,29 +794,39 @@ impl Block {
 
         for span in cache.spans() {
             if cursor < span.range.start {
-                children.push(self.render_inline_text_segment(
+                let fallback_span = crate::components::InlineSpan {
+                    range: cursor..span.range.start,
+                    style: crate::components::InlineStyle::default(),
+                    html_style: None,
+                    link: None,
+                    footnote: None,
+                    math: None,
+                };
+                children.extend(self.render_inline_text_word_segments(
                     &text[cursor..span.range.start],
-                    span,
+                    &fallback_span,
                     theme,
                     base_color,
                     font_size,
                     font_weight,
+                    cx,
                 ));
             }
 
             let span_text = &text[span.range.clone()];
             if let Some(math) = span.math.as_ref() {
                 children.push(
-                    self.render_inline_math_segment(math, span, theme, base_color, font_size),
+                    self.render_inline_math_segment(math, span, theme, base_color, font_size, cx),
                 );
             } else {
-                children.push(self.render_inline_text_segment(
+                children.extend(self.render_inline_text_word_segments(
                     span_text,
                     span,
                     theme,
                     base_color,
                     font_size,
                     font_weight,
+                    cx,
                 ));
             }
             cursor = span.range.end;
@@ -814,17 +841,53 @@ impl Block {
                 footnote: None,
                 math: None,
             };
-            children.push(self.render_inline_text_segment(
+            children.extend(self.render_inline_text_word_segments(
                 &text[cursor..],
                 &fallback_span,
                 theme,
                 base_color,
                 font_size,
                 font_weight,
+                cx,
             ));
         }
 
         children
+    }
+
+    /// Split a styled text run into wrap-friendly word segments. The mixed
+    /// inline-visual layout is a `flex_wrap` row, so a long run rendered as one
+    /// element wraps internally and claims the full row width, pushing the next
+    /// item (inline math, a script, ...) onto its own line. Emitting one element
+    /// per whitespace-delimited word lets the row break between words and keeps
+    /// adjacent visuals on the same visual line. Inline code and background
+    /// highlights stay a single element so their pill/background is continuous.
+    fn render_inline_text_word_segments(
+        &self,
+        text: &str,
+        span: &crate::components::InlineSpan,
+        theme: &Theme,
+        base_color: Hsla,
+        font_size: f32,
+        font_weight: FontWeight,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let has_background = span
+            .html_style
+            .is_some_and(|style| style.background_color.is_some());
+        let mut segments = Vec::new();
+        for word in inline_word_chunks(text, span.style.code, has_background) {
+            segments.push(self.render_inline_text_segment(
+                word,
+                span,
+                theme,
+                base_color,
+                font_size,
+                font_weight,
+                cx,
+            ));
+        }
+        segments
     }
 
     fn render_inline_text_segment(
@@ -835,6 +898,7 @@ impl Block {
         base_color: Hsla,
         font_size: f32,
         font_weight: FontWeight,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         if text.is_empty() {
             return div().into_any_element();
@@ -897,6 +961,33 @@ impl Block {
                 .bg(html_css_color_to_hsla(background, color));
         }
 
+        // This run renders as plain (non-interactive) text, so a link inside a
+        // mixed inline-visual block (alongside math or a script) would otherwise
+        // have no way to be followed. Attach the open-link handlers directly to
+        // the segment; they act only on Cmd/Ctrl+click so a plain click still
+        // falls through and focuses the block for editing. The wrapper element
+        // gates the hand cursor on that same modifier, matching the normal-text
+        // path where links render through `BlockTextElement`.
+        if let Some(link) = span.link.clone() {
+            let element = element
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(Self::on_rendered_link_mouse_down),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |block, event: &MouseUpEvent, _window, cx| {
+                        if event.modifiers.secondary() {
+                            block.open_rendered_link(&link, cx);
+                        }
+                    }),
+                );
+            return LinkFollowCursor {
+                child: element.into_any_element(),
+            }
+            .into_any_element();
+        }
+
         element.into_any_element()
     }
 
@@ -907,6 +998,7 @@ impl Block {
         theme: &Theme,
         base_color: Hsla,
         font_size: f32,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut color = base_color;
         if let Some(style) = span.html_style
@@ -933,6 +1025,7 @@ impl Block {
                 base_color,
                 font_size,
                 FontWeight::NORMAL,
+                cx,
             ),
         }
     }
@@ -995,6 +1088,7 @@ impl Block {
         theme: &Theme,
         strings: &I18nStrings,
         font_weight: FontWeight,
+        cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let segments = parse_table_cell_inline_images(&self.record.title.serialize_markdown());
         if !segments
@@ -1018,6 +1112,7 @@ impl Block {
                         theme.colors.text_default,
                         theme.typography.text_size,
                         font_weight,
+                        cx,
                     ));
                 }
                 TableCellInlineImageSegment::Image { markdown, syntax } => {
@@ -1031,6 +1126,7 @@ impl Block {
                             theme.colors.text_default,
                             theme.typography.text_size,
                             font_weight,
+                            cx,
                         ));
                     }
                 }
@@ -1399,6 +1495,7 @@ impl Block {
 				inherited_style.color,
 				inherited_style.font_size,
 				FontWeight::NORMAL,
+				cx,
 			));
 		}
 
@@ -1642,7 +1739,7 @@ impl Block {
     ) -> Stateful<Div> {
         let base = div()
             .id(block_id)
-            .key_context("BlockEditor")
+            .key_context(BLOCK_EDITOR_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_newline))
             .on_action(cx.listener(Self::on_delete_back))
@@ -1718,12 +1815,11 @@ impl Render for Block {
         }
 
         let showing_rendered_image = self.showing_rendered_image();
-        if self.sync_inline_math_source_edit_for_focus(focused && !showing_rendered_image) {
-            cx.notify();
-        }
-        self.sync_inline_projection_for_focus(
-            focused && !showing_rendered_image && !self.inline_math_source_editing(),
-        );
+        // Inline math stays in the projected view while focused (its `$...$`
+        // source shows as editable text), so links and other styling in the same
+        // block keep their attributes instead of collapsing to raw Markdown, the
+        // same way script spans already behave.
+        self.sync_inline_projection_for_focus(focused && !showing_rendered_image);
 
         if input_active && self.cursor_blink_task.is_none() {
             self.start_cursor_blink(cx);
@@ -1750,8 +1846,12 @@ impl Render for Block {
                 .table_cell_position()
                 .map(|position| position.is_header())
                 .unwrap_or(false);
+            // The header row is only styled distinctly (shaded background, medium
+            // weight) when the show-table-headers preference is enabled.
+            let style_as_header =
+                is_header && crate::config::EditorSettings::show_table_headers(cx);
             let highlight = self.table_axis_highlight;
-            let base_bg = if is_header {
+            let base_bg = if style_as_header {
                 c.table_header_bg
             } else {
                 c.table_cell_bg
@@ -1797,7 +1897,7 @@ impl Render for Block {
                 .text_color(c.text_default)
                 .line_height(rems(t.text_line_height));
 
-            let cell_base = if is_header {
+            let cell_base = if style_as_header {
                 cell_base.font_weight(FontWeight::MEDIUM)
             } else {
                 cell_base
@@ -1822,11 +1922,12 @@ impl Render for Block {
                 && let Some(inline_images) = self.render_table_cell_inline_images(
                     &theme,
                     &strings,
-                    if is_header {
+                    if style_as_header {
                         FontWeight::MEDIUM
                     } else {
                         FontWeight::NORMAL
                     },
+                    cx,
                 )
             {
                 return cell_base.child(inline_images).into_any_element();
@@ -1841,7 +1942,7 @@ impl Render for Block {
                     None,
                     c.text_default,
                     t.text_size,
-                    if is_header {
+                    if style_as_header {
                         FontWeight::MEDIUM
                     } else {
                         FontWeight::NORMAL
@@ -2449,7 +2550,7 @@ impl Render for Block {
                                 .right(px(d.code_language_input_gap))
                                 .bottom(px(0.0))
                                 .occlude()
-                                .key_context("BlockEditor")
+                                .key_context(BLOCK_EDITOR_CONTEXT)
                                 .track_focus(&self.code_language_focus_handle)
                                 .on_action(cx.listener(Self::on_code_language_newline))
                                 .on_action(cx.listener(Self::on_code_language_dismiss))
@@ -2599,7 +2700,8 @@ impl Render for Block {
                                             let _ = hover_block.update(cx, |_block, cx| {
                                                 cx.emit(BlockEvent::RequestTableAxisPreview {
                                                     kind: TableAxisKind::Column,
-                                                    index: hovered.then_some(column),
+                                                    index: column,
+                                                    hovered: *hovered,
                                                 });
                                             });
                                         })
@@ -2634,8 +2736,74 @@ impl Render for Block {
                     )
                 });
 
-                let header_row = div().w_full().flex().gap(px(0.0)).children(
-                    header_cells.into_iter().enumerate().map(|(column, cell)| {
+                let header_hover_block = weak_table_block.clone();
+                let header_select_block = weak_table_block.clone();
+                let header_menu_block = weak_table_block.clone();
+                // The header is visual row 0; its handle uses a more opaque
+                // version of the body-row color to signal its distinct role.
+                let header_marker = crate::components::TableAxisMarker {
+                    kind: TableAxisKind::Row,
+                    index: 0,
+                };
+                let header_band_bg = if selected_marker == Some(header_marker) {
+                    header_axis_emphasis(c.table_axis_selected_bg)
+                } else if preview_marker == Some(header_marker) {
+                    header_axis_emphasis(c.table_axis_preview_bg)
+                } else {
+                    hsla(0.0, 0.0, 0.0, 0.0)
+                };
+                let header_row = div()
+                    .relative()
+                    .w_full()
+                    .flex()
+                    .gap(px(0.0))
+                    .child(
+                        // Left-edge band mirrors the body rows so the header row
+                        // can be hovered, selected, and right-clicked just like
+                        // them, with the Header Row toggle added to its menu.
+                        div()
+                            .id(ElementId::Name(
+                                format!("table-header-axis-band-{}", self.record.id).into(),
+                            ))
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(-activation_band)
+                            .w(activation_band)
+                            .rounded(px(6.0))
+                            .bg(header_band_bg)
+                            .cursor_pointer()
+                            .on_hover(move |hovered, _window, cx| {
+                                let _ = header_hover_block.update(cx, |_block, cx| {
+                                    cx.emit(BlockEvent::RequestTableAxisPreview {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                        hovered: *hovered,
+                                    });
+                                });
+                            })
+                            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                                let _ = header_select_block.update(cx, |_block, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(BlockEvent::RequestSelectTableAxis {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                    });
+                                });
+                            })
+                            .on_mouse_down(MouseButton::Right, move |event, _window, cx| {
+                                let _ = header_menu_block.update(cx, |_block, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(BlockEvent::RequestOpenTableAxisMenu {
+                                        kind: TableAxisKind::Row,
+                                        index: 0,
+                                        position: event.position,
+                                    });
+                                });
+                            })
+                            .occlude(),
+                    )
+                    .children(header_cells.into_iter().enumerate().map(|(column, cell)| {
                         let hover_block = weak_table_block.clone();
                         let select_block = weak_table_block.clone();
                         let menu_block = weak_table_block.clone();
@@ -2665,7 +2833,8 @@ impl Render for Block {
                                         let _ = hover_block.update(cx, |_block, cx| {
                                             cx.emit(BlockEvent::RequestTableAxisPreview {
                                                 kind: TableAxisKind::Column,
-                                                index: hovered.then_some(column),
+                                                index: column,
+                                                hovered: *hovered,
                                             });
                                         });
                                     })
@@ -2691,8 +2860,7 @@ impl Render for Block {
                                     .occlude(),
                             )
                             .child(cell)
-                    }),
-                );
+                    }));
 
                 let body_rows =
                     runtime
@@ -2703,9 +2871,12 @@ impl Render for Block {
                             let hover_block = weak_table_block.clone();
                             let select_block = weak_table_block.clone();
                             let menu_block = weak_table_block.clone();
+                            // Row selections are addressed by visual index, where
+                            // the header is `0` and body rows follow at `1..`.
+                            let visual_row = body_row_index + 1;
                             let marker = crate::components::TableAxisMarker {
                                 kind: TableAxisKind::Row,
-                                index: body_row_index,
+                                index: visual_row,
                             };
                             let band_bg = if selected_marker == Some(marker) {
                                 c.table_axis_selected_bg
@@ -2740,7 +2911,8 @@ impl Render for Block {
                                             let _ = hover_block.update(cx, |_block, cx| {
                                                 cx.emit(BlockEvent::RequestTableAxisPreview {
                                                     kind: TableAxisKind::Row,
-                                                    index: hovered.then_some(body_row_index),
+                                                    index: visual_row,
+                                                    hovered: *hovered,
                                                 });
                                             });
                                         })
@@ -2751,7 +2923,7 @@ impl Render for Block {
                                                     cx.stop_propagation();
                                                     cx.emit(BlockEvent::RequestSelectTableAxis {
                                                         kind: TableAxisKind::Row,
-                                                        index: body_row_index,
+                                                        index: visual_row,
                                                     });
                                                 });
                                             },
@@ -2763,7 +2935,7 @@ impl Render for Block {
                                                     cx.stop_propagation();
                                                     cx.emit(BlockEvent::RequestOpenTableAxisMenu {
                                                         kind: TableAxisKind::Row,
-                                                        index: body_row_index,
+                                                        index: visual_row,
                                                         position: event.position,
                                                     });
                                                 });
@@ -2983,9 +3155,100 @@ impl Render for Block {
     }
 }
 
+/// Break a styled inline text run into wrap-friendly chunks for the mixed
+/// inline-visual layout. Runs that carry their own box (inline code, background
+/// highlight) stay a single chunk so their padding/background is continuous;
+/// everything else is split on whitespace with each word keeping its trailing
+/// space, so the `flex_wrap` row can break between words instead of pushing the
+/// next inline visual onto its own line.
+/// Wraps a rendered inline link run so the hand cursor only appears while the
+/// Cmd/Ctrl follow modifier is held. Links in mixed inline-visual blocks (math,
+/// scripts, inline images) render as plain divs, so this sets `PointingHand`
+/// when its hitbox is hovered and the modifier is down, like `BlockTextElement`
+/// does for normal text. The editor root repaints on follow-modifier toggles,
+/// so the cursor re-evaluates without the pointer moving. Layout and painting
+/// are delegated to the child.
+struct LinkFollowCursor {
+    child: AnyElement,
+}
+
+impl IntoElement for LinkFollowCursor {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for LinkFollowCursor {
+    type RequestLayoutState = ();
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.child.prepaint(window, cx);
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        hitbox: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if hitbox.is_hovered(window) && window.modifiers().secondary() {
+            // The editor root repaints on follow-modifier toggles, so the hand
+            // cursor re-evaluates here even while the pointer stays still.
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+        self.child.paint(window, cx);
+    }
+}
+
+fn inline_word_chunks(text: &str, code: bool, has_background: bool) -> Vec<&str> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if code || has_background {
+        return vec![text];
+    }
+    text.split_inclusive(char::is_whitespace).collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HtmlComputedStyle, column_axis_gutter_visible, html_node_visual_style};
+    use super::{
+        HtmlComputedStyle, column_axis_gutter_visible, html_node_visual_style, inline_word_chunks,
+    };
     use crate::components::{Block, BlockKind, BlockRecord, InlineTextTree, parse_html_document};
     use crate::components::{TableAxisKind, TableAxisMarker};
     use crate::i18n::I18nManager;
@@ -3025,6 +3288,32 @@ mod tests {
         assert!((channel(color.g) - green as i16).abs() <= 1);
         assert!((channel(color.b) - blue as i16).abs() <= 1);
         assert!((channel(color.a) - alpha as i16).abs() <= 1);
+    }
+
+    #[test]
+    fn inline_word_chunks_split_text_runs_for_wrapping() {
+        // Plain runs split per word so the flex-wrap row can break between
+        // words and keep neighboring inline math on the same visual line.
+        assert_eq!(
+            inline_word_chunks("Fusce x malesuada", false, false),
+            vec!["Fusce ", "x ", "malesuada"],
+        );
+        // Trailing whitespace stays attached so spacing survives the split.
+        assert_eq!(inline_word_chunks("end ", false, false), vec!["end "]);
+        assert!(inline_word_chunks("", false, false).is_empty());
+    }
+
+    #[test]
+    fn inline_word_chunks_keep_boxed_runs_whole() {
+        // Inline code and background highlights keep their box continuous.
+        assert_eq!(
+            inline_word_chunks("let x = 2", true, false),
+            vec!["let x = 2"],
+        );
+        assert_eq!(
+            inline_word_chunks("highlighted text", false, true),
+            vec!["highlighted text"],
+        );
     }
 
     #[test]

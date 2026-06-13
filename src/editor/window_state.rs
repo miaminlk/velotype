@@ -177,6 +177,15 @@ impl Editor {
     pub(crate) fn on_quit_application(
         &mut self,
         _: &crate::components::QuitApplication,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::app_menu::request_quit_application(cx);
+    }
+
+    pub(crate) fn on_close_window(
+        &mut self,
+        _: &crate::components::CloseWindow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -205,6 +214,7 @@ impl Editor {
         self.end_block_pointer_selection_sessions(cx);
         let selection_snapshot = self.capture_source_selection_snapshot(cx);
         self.clear_cross_block_selection(cx);
+        self.rendered_select_all_cycle = None;
         match self.view_mode {
             ViewMode::Rendered => {
                 let markdown = self.document.markdown_text(cx);

@@ -1,15 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyWindowHandle, AppContext, KeyDownEvent, Keystroke, TestAppContext, VisualTestContext,
+    AnyWindowHandle, AppContext, ClickEvent, KeyDownEvent, Keystroke, TestAppContext,
+    VisualTestContext,
 };
 
 use super::{Editor, ViewMode};
 use crate::components::{
-    BlockKind, ImageReferenceDefinitions, ImageResolvedSource, InlineTextTree, QuitApplication,
-    SaveDocument, TableCellInlineImageSegment, TableColumnAlignment,
+    BlockKind, CloseWindow, ImageReferenceDefinitions, ImageResolvedSource, InlineTextTree,
+    QuitApplication, SaveDocument, TableCellInlineImageSegment, TableColumnAlignment,
     parse_table_cell_inline_images, superscript_ordinal,
 };
 use crate::export::ExportFormat;
@@ -109,21 +110,6 @@ fn scrollbar_offset_mapping_clamps_to_track_bounds() {
     );
 }
 
-#[test]
-fn about_dialog_body_lines_include_repository_and_star_message() {
-    let strings = I18nStrings::zh_cn();
-    let lines = Editor::about_dialog_body_lines(&strings);
-
-    assert_eq!(lines[0], format!("Velotype {}", env!("CARGO_PKG_VERSION")));
-    assert_eq!(
-        lines[2],
-        format!("GitHub: {}", super::render::ABOUT_GITHUB_URL)
-    );
-    assert_eq!(
-        lines[3],
-        "如果本项目对您有帮助，那不妨给本项目一颗 Star⭐，十分感谢！"
-    );
-}
 
 #[gpui::test]
 async fn about_github_link_uses_gpui_url_opening(cx: &mut TestAppContext) {
@@ -479,7 +465,7 @@ async fn dirty_drop_saves_existing_document_before_replace(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-async fn quit_menu_action_closes_only_active_editor_window(cx: &mut TestAppContext) {
+async fn close_window_menu_action_closes_only_active_editor_window(cx: &mut TestAppContext) {
     init_editor_test_app(cx);
 
     let (_first_editor, cx) =
@@ -495,7 +481,7 @@ async fn quit_menu_action_closes_only_active_editor_window(cx: &mut TestAppConte
     assert_eq!(cx.cx.windows().len(), 2);
 
     cx.cx.update(|cx| {
-        crate::app_menu::dispatch_menu_action(&QuitApplication, cx);
+        crate::app_menu::dispatch_menu_action(&CloseWindow, cx);
     });
     cx.run_until_parked();
 
@@ -528,7 +514,7 @@ async fn app_menu_opened_windows_activate_and_close_independently(cx: &mut TestA
     );
 
     cx.update(|cx| {
-        crate::app_menu::dispatch_menu_action(&QuitApplication, cx);
+        crate::app_menu::dispatch_menu_action(&CloseWindow, cx);
     });
     cx.run_until_parked();
 
@@ -537,7 +523,7 @@ async fn app_menu_opened_windows_activate_and_close_independently(cx: &mut TestA
     assert_eq!(remaining[0].window_id(), first_window.window_id());
 
     cx.update(|cx| {
-        crate::app_menu::dispatch_menu_action(&QuitApplication, cx);
+        crate::app_menu::dispatch_menu_action(&CloseWindow, cx);
     });
     cx.run_until_parked();
 
@@ -577,7 +563,7 @@ async fn app_menu_opened_file_window_reinstalls_close_guard_after_registration(
         .expect("second editor window should be open");
 
     cx.update(|cx| {
-        crate::app_menu::dispatch_menu_action(&QuitApplication, cx);
+        crate::app_menu::dispatch_menu_action(&CloseWindow, cx);
     });
     cx.run_until_parked();
 
@@ -660,7 +646,35 @@ async fn app_menu_opened_dirty_window_close_guard_prompts_only_that_window(
 }
 
 #[gpui::test]
-async fn quit_menu_action_prompts_only_dirty_active_editor(cx: &mut TestAppContext) {
+async fn quit_application_allows_clean_editor_windows_to_quit(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+
+    let (first_editor, cx) =
+        cx.add_window_view(|_window, cx| Editor::from_markdown(cx, "first".to_string(), None));
+    let _first_window = activate_visual_window(cx);
+
+    let (second_editor, cx) = cx
+        .cx
+        .add_window_view(|_window, cx| Editor::from_markdown(cx, "second".to_string(), None));
+    let _second_window = activate_visual_window(cx);
+
+    assert_eq!(cx.cx.windows().len(), 2);
+
+    cx.cx.update(|cx| {
+        crate::app_menu::dispatch_menu_action(&QuitApplication, cx);
+    });
+    cx.run_until_parked();
+
+    first_editor.read_with(cx, |editor, _cx| {
+        assert!(!editor.show_unsaved_changes_dialog);
+    });
+    second_editor.read_with(cx, |editor, _cx| {
+        assert!(!editor.show_unsaved_changes_dialog);
+    });
+}
+
+#[gpui::test]
+async fn quit_application_prompts_dirty_editor_without_quitting(cx: &mut TestAppContext) {
     init_editor_test_app(cx);
 
     let (first_editor, cx) =
@@ -701,7 +715,9 @@ async fn quit_menu_action_prompts_only_dirty_active_editor(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-async fn windows_fallback_quit_dispatch_closes_target_editor_window(cx: &mut TestAppContext) {
+async fn windows_fallback_close_window_dispatch_closes_target_editor_window(
+    cx: &mut TestAppContext,
+) {
     init_editor_test_app(cx);
 
     let (editor, cx) =
@@ -710,7 +726,7 @@ async fn windows_fallback_quit_dispatch_closes_target_editor_window(cx: &mut Tes
 
     cx.update(|window, cx| {
         let editor = editor.downgrade();
-        crate::app_menu::dispatch_menu_action_for_editor(&QuitApplication, &editor, window, cx);
+        crate::app_menu::dispatch_menu_action_for_editor(&CloseWindow, &editor, window, cx);
     });
     cx.run_until_parked();
 
@@ -723,7 +739,7 @@ async fn windows_fallback_quit_dispatch_closes_target_editor_window(cx: &mut Tes
 }
 
 #[gpui::test]
-async fn window_quit_action_closes_current_editor_before_global_menu_route(
+async fn window_close_action_closes_current_editor_before_global_menu_route(
     cx: &mut TestAppContext,
 ) {
     init_editor_test_app(cx);
@@ -737,7 +753,7 @@ async fn window_quit_action_closes_current_editor_before_global_menu_route(
         .add_window_view(|_window, cx| Editor::from_markdown(cx, "second".to_string(), None));
     let second_window = activate_visual_window(cx);
 
-    cx.dispatch_action(QuitApplication);
+    cx.dispatch_action(CloseWindow);
     cx.run_until_parked();
 
     let remaining = cx.cx.windows();
@@ -952,7 +968,8 @@ async fn moving_table_row_updates_focus_and_selection(cx: &mut TestAppContext) {
 
     editor.update(cx, |editor, cx| {
         let table = editor.document.first_root().expect("table root").clone();
-        editor.move_table_row(&table, 1, -1, cx);
+        // Visual row 2 is the second body row; move it up above the first.
+        editor.move_table_row(&table, 2, -1, cx);
 
         let record = table.read(cx).record.table.as_ref().expect("table record");
         assert_eq!(record.rows[0][0].serialize_markdown(), "3");
@@ -961,7 +978,7 @@ async fn moving_table_row_updates_focus_and_selection(cx: &mut TestAppContext) {
             Some(super::TableAxisSelection {
                 table_block_id: table.entity_id(),
                 kind: crate::components::TableAxisKind::Row,
-                index: 0,
+                index: 1,
             })
         );
 
@@ -971,6 +988,139 @@ async fn moving_table_row_updates_focus_and_selection(cx: &mut TestAppContext) {
             .as_ref()
             .expect("rebuilt runtime");
         assert_eq!(editor.pending_focus, Some(runtime.rows[0][0].entity_id()));
+    });
+}
+
+#[gpui::test]
+async fn moving_first_body_row_up_swaps_with_header(cx: &mut TestAppContext) {
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |", "| 3 | 4 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        // Visual row 1 (first body row) moves up into the header position.
+        editor.move_table_row(&table, 1, -1, cx);
+
+        let record = table.read(cx).record.table.as_ref().expect("table record");
+        assert_eq!(record.header[0].serialize_markdown(), "1");
+        assert_eq!(record.rows[0][0].serialize_markdown(), "A");
+        assert_eq!(
+            editor.table_axis_selection,
+            Some(super::TableAxisSelection {
+                table_block_id: table.entity_id(),
+                kind: crate::components::TableAxisKind::Row,
+                index: 0,
+            })
+        );
+    });
+}
+
+#[gpui::test]
+async fn moving_header_row_down_swaps_with_first_body(cx: &mut TestAppContext) {
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |", "| 3 | 4 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        // Visual row 0 (header) moves down, swapping with the first body row.
+        editor.move_table_row(&table, 0, 1, cx);
+
+        let record = table.read(cx).record.table.as_ref().expect("table record");
+        assert_eq!(record.header[0].serialize_markdown(), "1");
+        assert_eq!(record.rows[0][0].serialize_markdown(), "A");
+        assert_eq!(
+            editor.table_axis_selection,
+            Some(super::TableAxisSelection {
+                table_block_id: table.entity_id(),
+                kind: crate::components::TableAxisKind::Row,
+                index: 1,
+            })
+        );
+    });
+}
+
+#[gpui::test]
+async fn selecting_first_body_row_does_not_highlight_header(cx: &mut TestAppContext) {
+    use crate::components::{TableAxisHighlight, TableAxisKind};
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |", "| 3 | 4 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        // Visual row 1 is the first body row; the header (row 0) must stay clear.
+        editor.select_table_axis(table.entity_id(), TableAxisKind::Row, 1, cx);
+
+        let runtime = table.read(cx).table_runtime.clone().expect("runtime");
+        for cell in &runtime.header {
+            assert_eq!(
+                cell.read(cx).table_axis_highlight,
+                TableAxisHighlight::None,
+                "header should not be highlighted"
+            );
+        }
+        for cell in &runtime.rows[0] {
+            assert_eq!(
+                cell.read(cx).table_axis_highlight,
+                TableAxisHighlight::Selected
+            );
+        }
+        for cell in &runtime.rows[1] {
+            assert_eq!(cell.read(cx).table_axis_highlight, TableAxisHighlight::None);
+        }
+    });
+}
+
+#[gpui::test]
+async fn selecting_header_row_highlights_only_header(cx: &mut TestAppContext) {
+    use crate::components::{TableAxisHighlight, TableAxisKind};
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        editor.select_table_axis(table.entity_id(), TableAxisKind::Row, 0, cx);
+
+        let runtime = table.read(cx).table_runtime.clone().expect("runtime");
+        for cell in &runtime.header {
+            assert_eq!(
+                cell.read(cx).table_axis_highlight,
+                TableAxisHighlight::Selected
+            );
+        }
+        for cell in &runtime.rows[0] {
+            assert_eq!(cell.read(cx).table_axis_highlight, TableAxisHighlight::None);
+        }
+    });
+}
+
+#[gpui::test]
+async fn body_row_preview_survives_stale_header_leave(cx: &mut TestAppContext) {
+    use crate::components::TableAxisKind;
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        let id = table.entity_id();
+
+        // Pointer crosses from the header handle down onto the first body row.
+        // The body handle's enter arrives first, then the header handle's leave;
+        // the stale leave must not clear the preview the pointer moved onto.
+        editor.preview_table_axis(id, TableAxisKind::Row, 1, true, cx);
+        editor.preview_table_axis(id, TableAxisKind::Row, 0, false, cx);
+        assert_eq!(
+            editor.table_axis_preview,
+            Some(super::TableAxisSelection {
+                table_block_id: id,
+                kind: TableAxisKind::Row,
+                index: 1,
+            }),
+            "body row preview must survive the header's stale leave"
+        );
+
+        // Leaving the body handle that owns the preview still clears it.
+        editor.preview_table_axis(id, TableAxisKind::Row, 1, false, cx);
+        assert_eq!(editor.table_axis_preview, None);
     });
 }
 
@@ -993,6 +1143,29 @@ async fn deleting_table_column_moves_selection_to_nearest_survivor(cx: &mut Test
                 index: 1,
             })
         );
+    });
+}
+
+#[gpui::test]
+async fn deleting_table_header_promotes_next_row(cx: &mut TestAppContext) {
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+    let editor = cx.new(|cx| Editor::from_markdown(cx, markdown, None));
+
+    editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        editor.delete_table_header_row(&table, cx);
+
+        let record = table.read(cx).record.table.as_ref().expect("table record");
+        assert_eq!(record.header[0].serialize_markdown(), "1");
+        assert_eq!(record.header[1].serialize_markdown(), "2");
+        assert!(record.rows.is_empty());
+
+        let runtime = table
+            .read(cx)
+            .table_runtime
+            .as_ref()
+            .expect("rebuilt runtime");
+        assert_eq!(editor.pending_focus, Some(runtime.header[0].entity_id()));
     });
 }
 
@@ -2128,6 +2301,183 @@ async fn ctrl_tab_toggles_view_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn ctrl_a_selects_entire_source_document_in_source_mode(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "alpha\n\nbeta".to_string(), None)
+    });
+
+    editor.update(cx, |editor, cx| {
+        editor.toggle_view_mode(cx);
+        assert!(matches!(editor.view_mode, ViewMode::Source));
+        let source = editor.document.visible_blocks()[0].entity.clone();
+        editor.focus_block(source.entity_id());
+        source.update(cx, |block, _cx| {
+            block.selected_range = 1..3;
+        });
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        let source = editor.document.visible_blocks()[0].entity.read(cx);
+        assert_eq!(source.selected_range, 0..source.visible_len());
+        assert!(editor.cross_block_selection.is_none());
+    });
+}
+
+#[gpui::test]
+async fn ctrl_a_selects_only_focused_block_text_in_rendered_mode(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "alpha\n\nbeta".to_string(), None)
+    });
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.visible_blocks()[1].entity.clone();
+        editor.focus_block(block.entity_id());
+        block.update(cx, |block, _cx| {
+            block.selected_range = 1..1;
+        });
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        let first = editor.document.visible_blocks()[0].entity.read(cx);
+        let second = editor.document.visible_blocks()[1].entity.read(cx);
+        assert_eq!(first.selected_range, 0..0);
+        assert_eq!(second.selected_range, 0..second.visible_len());
+        assert!(editor.cross_block_selection.is_none());
+    });
+}
+
+#[gpui::test]
+async fn repeated_ctrl_a_selects_all_rendered_blocks(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let markdown =
+        "alpha\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\ngamma";
+    let (editor, cx) = cx.add_window_view({
+        let markdown = markdown.to_string();
+        move |_window, cx| Editor::from_markdown(cx, markdown.clone(), None)
+    });
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.visible_blocks()[0].entity.clone();
+        editor.focus_block(block.entity_id());
+        block.update(cx, |block, block_cx| {
+            block.move_to(0, block_cx);
+        });
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        let first = editor.document.visible_blocks()[0].entity.read(cx);
+        assert_eq!(first.selected_range, 0..first.visible_len());
+        assert!(editor.cross_block_selection.is_none());
+    });
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        let visible = editor.document.visible_blocks();
+        let first_id = visible[0].entity.entity_id();
+        let last = visible.last().expect("visible blocks");
+        let last_id = last.entity.entity_id();
+        let last_len = last.entity.read(cx).visible_len();
+        let selection = editor
+            .cross_block_selection
+            .expect("second Ctrl+A should select the rendered document");
+        assert_eq!(selection.anchor.entity_id, first_id);
+        assert_eq!(selection.anchor.offset, 0);
+        assert_eq!(selection.focus.entity_id, last_id);
+        assert_eq!(selection.focus.offset, last_len);
+        for visible in visible {
+            let block = visible.entity.read(cx);
+            let len = block.visible_len();
+            if len > 0 {
+                assert_eq!(block.editor_selection_range, Some(0..len));
+            }
+        }
+    });
+
+    let selected_after_second = editor.read_with(cx, |editor, _cx| editor.cross_block_selection);
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        assert_eq!(
+            editor.cross_block_selection, selected_after_second,
+            "third Ctrl+A should keep the full rendered document selected"
+        );
+        for visible in editor.document.visible_blocks() {
+            let block = visible.entity.read(cx);
+            let len = block.visible_len();
+            if len > 0 {
+                assert_eq!(block.editor_selection_range, Some(0..len));
+            }
+        }
+    });
+}
+
+#[gpui::test]
+async fn rendered_ctrl_a_cycle_expires_before_second_press(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let (editor, cx) = cx.add_window_view(|_window, cx| {
+        Editor::from_markdown(cx, "alpha\n\nbeta".to_string(), None)
+    });
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.visible_blocks()[1].entity.clone();
+        editor.focus_block(block.entity_id());
+        block.update(cx, |block, block_cx| {
+            block.move_to(1, block_cx);
+        });
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.update(cx, |editor, cx| {
+        let block = editor.document.visible_blocks()[1].entity.clone();
+        block.update(cx, |block, _cx| {
+            block.selected_range = 1..1;
+        });
+        let cycle = editor
+            .rendered_select_all_cycle
+            .as_mut()
+            .expect("first Ctrl+A should arm the rendered select-all cycle");
+        cycle.last_pressed_at =
+            Instant::now() - (Editor::RENDERED_SELECT_ALL_CYCLE_WINDOW + Duration::from_millis(1));
+    });
+
+    cx.simulate_keystrokes("ctrl-a");
+    redraw(cx);
+
+    editor.read_with(cx, |editor, cx| {
+        let second = editor.document.visible_blocks()[1].entity.read(cx);
+        assert_eq!(second.selected_range, 0..second.visible_len());
+        assert!(editor.cross_block_selection.is_none());
+        assert_eq!(
+            editor
+                .rendered_select_all_cycle
+                .expect("cycle should be reset by expired second press")
+                .count,
+            1
+        );
+    });
+}
+
+#[gpui::test]
 async fn tab_key_inserts_tab_in_focused_paragraph(cx: &mut TestAppContext) {
     init_editor_test_app(cx);
     let (editor, cx) =
@@ -2307,6 +2657,106 @@ async fn tab_key_keeps_table_cell_navigation(cx: &mut TestAppContext) {
 
     editor.update(cx, |editor, _cx| {
         assert_eq!(editor.active_entity_id, Some(second_cell_id));
+    });
+}
+
+#[gpui::test]
+async fn right_arrow_at_cell_end_moves_to_next_cell(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+    let (editor, cx) =
+        cx.add_window_view(move |_window, cx| Editor::from_markdown(cx, markdown, None));
+
+    let second_cell_id = editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        let runtime = table
+            .read(cx)
+            .table_runtime
+            .as_ref()
+            .expect("table runtime")
+            .clone();
+        let first = runtime.rows[0][0].clone();
+        let second = runtime.rows[0][1].clone();
+        editor.focus_block(first.entity_id());
+        first.update(cx, |block, block_cx| {
+            block.move_to(block.visible_len(), block_cx);
+        });
+        second.entity_id()
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("right");
+    redraw(cx);
+
+    editor.update(cx, |editor, _cx| {
+        assert_eq!(editor.active_entity_id, Some(second_cell_id));
+    });
+}
+
+#[gpui::test]
+async fn left_arrow_at_cell_start_moves_to_previous_cell(cx: &mut TestAppContext) {
+    init_editor_test_app(cx);
+    let markdown = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+    let (editor, cx) =
+        cx.add_window_view(move |_window, cx| Editor::from_markdown(cx, markdown, None));
+
+    let first_cell_id = editor.update(cx, |editor, cx| {
+        let table = editor.document.first_root().expect("table root").clone();
+        let runtime = table
+            .read(cx)
+            .table_runtime
+            .as_ref()
+            .expect("table runtime")
+            .clone();
+        let first = runtime.rows[0][0].clone();
+        let second = runtime.rows[0][1].clone();
+        editor.focus_block(second.entity_id());
+        second.update(cx, |block, block_cx| {
+            block.move_to(0, block_cx);
+        });
+        first.entity_id()
+    });
+    redraw(cx);
+
+    cx.simulate_keystrokes("left");
+    redraw(cx);
+
+    editor.update(cx, |editor, _cx| {
+        assert_eq!(editor.active_entity_id, Some(first_cell_id));
+    });
+}
+
+#[gpui::test]
+async fn inserting_table_at_document_end_adds_trailing_paragraph(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let editor = cx.new(|cx| Editor::from_markdown(cx, String::new(), None));
+
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.table_insert_dialog = Some(super::context_menu::TableInsertDialogState {
+                target: super::context_menu::TableInsertTarget::Append,
+                body_rows: 2,
+                columns: 2,
+            });
+            editor.on_confirm_table_insert_dialog(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    editor.update(cx, |editor, cx| {
+        let roots = editor.document.visible_blocks();
+        let kinds = roots
+            .iter()
+            .map(|visible| visible.entity.read(cx).kind())
+            .collect::<Vec<_>>();
+        let table_index = kinds
+            .iter()
+            .position(|kind| *kind == BlockKind::Table)
+            .expect("table inserted");
+        // The table is the last meaningful block, so an empty paragraph is
+        // appended after it to give the caret somewhere to land.
+        assert_eq!(kinds.get(table_index + 1), Some(&BlockKind::Paragraph));
+        assert_eq!(table_index + 1, kinds.len() - 1);
+        assert_eq!(roots[table_index + 1].entity.read(cx).display_text(), "");
     });
 }
 
