@@ -2987,3 +2987,48 @@ async fn rtl_selection_across_trailing_link_keeps_block_end_anchor(cx: &mut Test
         }
     });
 }
+
+#[gpui::test]
+async fn typing_destination_into_empty_link_parens_keeps_caret_inside(cx: &mut TestAppContext) {
+    // Fixes an edge case where batched auto-pair macro `()+Left` caused first character typed
+    // into `()` of link to snap the caret past `)` with rest of URL landing outside the link.
+    let block = cx.new(|cx| {
+        Block::with_record(
+            cx,
+            BlockRecord::new(
+                BlockKind::Paragraph,
+                InlineTextTree::from_markdown("[GitHub]"),
+            ),
+        )
+    });
+
+    block.update(cx, |block, cx| {
+        // Auto-pair the `()` after the label, then drop the caret between them.
+        block.selected_range = 8..8;
+        block.sync_inline_projection_for_focus(true);
+        block.replace_text_in_visible_range(8..8, "()", None, false, cx);
+        block.sync_inline_projection_for_focus(true);
+        let between = block.display_text().find(')').expect("closing paren");
+        block.selected_range = between..between;
+        block.sync_inline_projection_for_focus(true);
+        for ch in "https://github.com".chars() {
+            let at = block.selected_range.clone();
+            block.replace_text_in_visible_range(at, &ch.to_string(), None, false, cx);
+            block.sync_inline_projection_for_focus(true);
+        }
+    });
+
+    block.read_with(cx, |block, _cx| {
+        assert_eq!(
+            block.record.title.serialize_markdown(),
+            "[GitHub](https://github.com)"
+        );
+        assert_eq!(
+            block.inline_link_at(1).map(str::to_string),
+            Some("https://github.com".to_string())
+        );
+        // Caret stays inside `()`, just before the closing `)`.
+        let close = block.display_text().find(')').expect("closing paren");
+        assert_eq!(block.selected_range, close..close);
+    });
+}
