@@ -177,6 +177,7 @@ pub struct Block {
     pub(crate) list_group_separator_candidate: bool,
     numbered_list_restart_requested: bool,
     quote_reparse_requested: bool,
+	pub(crate) composition_cleared_at: Option<Instant>,
 }
 
 /// Cached standalone image presentation state for a block.
@@ -272,6 +273,7 @@ impl Block {
             list_group_separator_candidate: false,
             numbered_list_restart_requested: false,
             quote_reparse_requested: false,
+			composition_cleared_at: None,
         };
         block.sync_code_highlight();
         block.refresh_cached_display_text();

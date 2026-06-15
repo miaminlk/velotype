@@ -432,6 +432,13 @@ impl Block {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+		if let Some(cleared_at) = self.composition_cleared_at.take()
+		{
+			if cleared_at.elapsed() < std::time::Duration::from_millis(50)
+			{
+				return;
+			}
+		}
         if self.is_table_cell() {
             if self.selected_range.is_empty() {
                 let previous = self.previous_boundary(self.cursor_offset());

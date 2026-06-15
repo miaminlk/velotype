@@ -6,6 +6,7 @@
 //! operating on the block's title.
 
 use std::ops::Range;
+use std::time::Instant;
 
 use gpui::*;
 
@@ -84,6 +85,23 @@ impl EntityInputHandler for Block {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+		let is_clearing = if self.code_language_focus_handle.is_focused(_window)
+		{
+			new_text.is_empty() && self.code_language_marked_range.is_some()
+		}
+		else
+		{
+			new_text.is_empty() && self.marked_range.is_some()
+		};
+		if is_clearing
+		{
+			self.composition_cleared_at = Some(Instant::now());
+		}
+		else if !new_text.is_empty()
+		{
+			self.composition_cleared_at = None;
+		}
+
         if self.code_language_focus_handle.is_focused(_window) {
             let visible_range = range_utf16
                 .as_ref()
@@ -121,6 +139,23 @@ impl EntityInputHandler for Block {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+		let is_clearing = if self.code_language_focus_handle.is_focused(_window)
+		{
+			new_text.is_empty() && self.code_language_marked_range.is_some()
+		}
+		else
+		{
+			new_text.is_empty() && self.marked_range.is_some()
+		};
+		if is_clearing
+		{
+			self.composition_cleared_at = Some(Instant::now());
+		}
+		else if !new_text.is_empty()
+		{
+			self.composition_cleared_at = None;
+		}
+
         if self.code_language_focus_handle.is_focused(_window) {
             let visible_range = range_utf16
                 .as_ref()
